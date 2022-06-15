@@ -1,4 +1,4 @@
-"site_no","date","sscgmL","portal","channel","station_nm","site_code","lat","lon","drainage_area_km2","elevation_m","dist2river_m","dist_downstream_km"
+"site_no","date","sscmgmL","portal","channel","station_nm","site_code","lat","lon","drainage_area_km2","elevation_m","dist2river_m","dist_downstream_km"
 "USGS-02359170","1992-05-07","36","WQP","MAIN STEM","APALACHICOLA RIVER NR SUMATRA,FLA.","STREAM","29.94937094000000","-85.0154686000000","49727.7716987267","0","99.8581269634038","675.85412442503"
 "USGS-02358000","1991-05-01","1","WQP","MAIN STEM","APALACHICOLA RIVER AT CHATTAHOOCHEE FLA","STREAM","30.70102510000000","-84.8590871000000","44547.7954801093","0","107.48466222664","538.975508374003"
 "USGS-02358000","1990-04-17","13","WQP","MAIN STEM","APALACHICOLA RIVER AT CHATTAHOOCHEE FLA","STREAM","30.70102510000000","-84.8590871000000","44547.7954801093","0","107.48466222664","538.975508374003"

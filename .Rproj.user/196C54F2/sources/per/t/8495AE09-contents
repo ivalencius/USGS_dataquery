@@ -1,0 +1,113 @@
+---
+title: "SSC_Retrieval"
+author: "Ilan Valencius"
+use: "For retrieving USGS suspended sediment concentration data along a river transect"
+---
+
+## Import Packages
+
+```{r packages}
+library(dataRetrieval)
+library(sp)
+library(maptools)
+library(magrittr)
+library(maps)
+library(rgdal)
+library(ggplot2)
+library(usmap)
+library(dataRetrieval)
+library(stringr)
+```
+
+## Set up imports
+
+```{r imports}
+centerline_kml <- "D:/valencig/Thesis/Data/chattahoochee_shape/chattahoochee_centerline.kml"
+
+dam_names <- paste0(c("Buford Dam",
+               "West Point Dam",
+               "Riverview Dam",
+               "Bartletts Ferry Dam",
+               "Goat Rock Dam",
+               "Oliver Dam",
+               "North Highlands Dam",
+               "Walter F. George Dam",
+               "West Banks Dam. Columbia GA Border",
+               "Jim Woodruff Dam"), ".kml")
+
+station_file <- "D:/valencig/Thesis/usgs_SSC/imports/station_numbers.csv"
+```
+
+## Plot centerline transect
+
+```{r transect}
+plot_dam <- function(dam_name){
+  read_dir <- "D:/valencig/Thesis/Data/chattahoochee_shape/dams/"
+  dam <- as.data.frame(t(as.data.frame(maptools::getKMLcoordinates(paste0(read_dir, dam_name), 
+                                                        ignoreAltitude = TRUE))))
+  names(dam) <- c('lon','lat')
+  dam_transform <- usmap_transform(dam)
+  geom_point(data = dam_transform,
+             aes(x = x, y = y),
+             color = "green")
+}
+
+centerline <- as.data.frame(maptools::getKMLcoordinates(centerline_kml, 
+                                                        ignoreAltitude = TRUE))
+names(centerline) <- c('lon','lat')
+
+centerline_transform <- usmap_transform(centerline)
+
+svg(filename = 'exports/rivertransect.svg',width=8, height=8)
+par(mar = rep(0,4)) # remove margins
+plot_usmap(fill = "black", 
+           alpha = 0.5, 
+           color = "white", 
+           size = 1, 
+           include= c("GA","FL", "AL"), labels = TRUE) +
+  labs(title = "Chattahooche Centerline", subtitle = "Buford Dam to Brothers River") +
+  geom_path(data = centerline_transform,
+            aes(x = x, y = y),
+            color = "red",
+            size = 1) +
+  lapply(dam_names, plot_dam) 
+dev.off()
+```
+
+## Get info on each station
+
+```{r stations}
+# Daily value parameters
+dv_parameters <- c("00060") # discharge, 
+wq_parameters <- c("00530") #Suspended solids, water, unfiltered, milligrams per liter ,"00055", "00064", "50279" stream velocity, stream mean depth, SSC (flow through centrifuge)
+statCd <- c("00003") # stat codes: mean, min, max
+startDate <- "1985-01-01"
+endDate <- "1995-12-31"
+stations <- read.table(station_file, header = TRUE, colClasses = "character")
+
+# Function to remove empty columns of query
+rm_empty <- function(data){
+  empty_columns <- colSums(is.na(data) | data == "") == nrow(data)
+  return(data[, !empty_columns])
+}
+#empty_columns <- colSums(is.na(station_data) | station_data == "") == nrow(station_data)
+#station_data <- readNWISsite(stations$site_no)
+#station_data <- rm_empty(station_data)
+
+# To export information on stations to csv
+# write.csv(station_data, "exports/chattahoochee_usgs_stations.csv", row.names=FALSE)
+
+# Get SSC data for each station
+#dv <- readNWISdv(stations$site_no, dv_parameters, startDate, endDate, statCd = statCd)
+dv_filtered <- data.frame(dv["site_no"], 
+                          dv["Date"],
+                          dv["X_00060_00003"],
+                          dv["X_00010_00003"])
+names(dv_filtered) <- c("site_no", "date", "discharge", "temp")
+#wq <- readWQPqw(paste0("USGS-", stations$site_no), wq_parameters, startDate, endDate)
+wq["MonitoringLocationIdentifier"] <- wq["MonitoringLocationIdentifier"] %>% str_replace("USGS-","")
+wq_filtered <- data.frame(Location = wq["MonitoringLocationIdentifier"],
+                          SampleDate = wq["ActivityStartDate"],
+                          SSC = wq["ResultMeasureValue"])
+names(wq_filtered) <- c("site_no","date", "sscmgL")
+```

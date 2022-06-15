@@ -2,7 +2,7 @@
 title: "SSC_Retrieval"
 output: rmarkdown::github_document
 author: "Ilan Valencius"
-use: "For retrieving USGS suspended sediment concentration data along a river transect"
+use: "For retrieving USGS suspended sediment concentration and discharge data along a river transect"
 ---
 
 ## Import Packages
@@ -38,7 +38,7 @@ library(qpcR)
 -   Dates should be in in YYYY-MM-DD format
 
 ```{r imports}
-wd_root <- 'D:/valencig/Thesis/usgs_SSC'
+wd_root <- 'D:/valencig/Thesis/USGS_dataquery'
 centerline_kml <- "D:/valencig/Thesis/Data/chattahoochee_shape/chattahoochee_centerline.kml"
 
 # Location of dams saved as kml files in dam_read_dir
@@ -58,8 +58,8 @@ centerline_kml <- "D:/valencig/Thesis/Data/chattahoochee_shape/chattahoochee_cen
 # dam_read_dir <- "D:/valencig/Thesis/Data/chattahoochee_shape/dams/"
 
 # When you want station info
-startDate <- "1950-01-01"
-endDate <- "2023-01-01"
+startDate <- "1990-01-01"
+endDate <- "1995-01-01"
 
 ## Query parameters for station data ##
 
@@ -381,7 +381,7 @@ ut_wqp <- data.table(whatWQPsites(siteid=ut_wqp_names))[,":="(
 ## Map gauge location to river distance ## 
 
 S1 <- as(riverdata$UM_flowlines, 'Spatial')
-#trace(line2network, edit=T) --> comment out following two lines
+# trace(line2network, edit=T) --> comment out following two lines
 # suppressMessages(out <- removemicrosegs(out))
 # suppressMessages(out <- removeduplicates(out))
 nldi_proj4 <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84"
@@ -549,16 +549,7 @@ ggsave(nwis_stations,
 ```{r discharge stations}
 ## Plot Station Data ##
 nwis_plot<-nwis_stations%>%st_as_sf(coords=c('lon','lat')) %>% st_set_crs(4326)
-discharge_locs <- 
-# ggplot() +
-#   geom_line(data = Q_full,
-#             aes(x = Date, y = Flow, col = site_no),
-#             size = .5) +
-#   facet_wrap(~site_no, nrow = 4) +
-#   theme_minimal() +
-#   scale_color_brewer(palette = "Set1") +
-#   theme(legend.position = "none") +
-ggplot() + 
+discharge_locs <- ggplot() + 
   ## Basin and Channels ##
   geom_sf(data = riverdata$basin, show.legend = F) + 
   geom_sf(data = riverdata$UM_flowlines, col = "blue", show.legend = F) + 
@@ -594,16 +585,7 @@ ggsave(discharge_locs,
 ```{r ssc stations}
 ## Plot Station Data ##
 wqp_plot<-wqp_stations%>%st_as_sf(coords=c('lon','lat')) %>% st_set_crs(4326)
-ssc_locs <- 
-# ggplot() +
-#   geom_line(data = Q_full,
-#             aes(x = Date, y = Flow, col = site_no),
-#             size = .5) +
-#   facet_wrap(~site_no, nrow = 4) +
-#   theme_minimal() +
-#   scale_color_brewer(palette = "Set1") +
-#   theme(legend.position = "none") +
-ggplot() + 
+ssc_locs <- ggplot() + 
   ## Basin and Channels ##
   geom_sf(data = riverdata$basin, show.legend = F) + 
   geom_sf(data = riverdata$UM_flowlines, col = "blue", show.legend = F) + 

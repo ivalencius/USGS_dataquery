@@ -1,9 +1,11 @@
 ---
 title: "SSC_Retrieval"
-output: rmarkdown::github_document
+output: github_document
 author: "Ilan Valencius"
-use: "For retrieving USGS suspended sediment concentration and discharge data along a river transect"
+date: "2022-06-16"
 ---
+
+# Use: "For retrieving USGS suspended sediment concentration and discharge data along a river transect"
 
 ## Import Packages
 
@@ -111,38 +113,36 @@ if(!dir.exists(wd_root)){
 
 ## Plot centerline transect
 
--   **Must run this cell**
-
 ```{r transect}
-plot_dam <- function(dam_name){
-  dam <- as.data.frame(t(as.data.frame(maptools::getKMLcoordinates(paste0(dam_read_dir, dam_name),
-                                                        ignoreAltitude = TRUE))))
-  names(dam) <- c('lon','lat')
-  dam_transform <- usmap_transform(dam)
-  geom_point(data = dam_transform,
-             aes(x = x, y = y),
-             color = "green",
-             shape=2)
-}
-
-centerline_transform <- usmap_transform(centerline)
-
-# Create Dam Map
-dam_map = plot_usmap(fill = "black", alpha = 0.5, color = "white", size = 1,
-           include= c("GA","FL", "AL"), labels = TRUE) +
-  labs(title = "Chattahooche Centerline", subtitle = "Buford Dam to Brothers River") +
-  geom_path(data = centerline_transform,
-            aes(x = x, y = y),
-            color = "red",
-            size = 1) +
-  lapply(dam_names, plot_dam)
-
-dam_map
-
-# Save Map
-ggsave(dam_map,
-       filename = 'exports/rivertransect.png',
-       width = 5, height = 8)
+# plot_dam <- function(dam_name){
+#   dam <- as.data.frame(t(as.data.frame(maptools::getKMLcoordinates(paste0(dam_read_dir, dam_name),
+#                                                         ignoreAltitude = TRUE))))
+#   names(dam) <- c('lon','lat')
+#   dam_transform <- usmap_transform(dam)
+#   geom_point(data = dam_transform,
+#              aes(x = x, y = y),
+#              color = "green",
+#              shape=2)
+# }
+# 
+# centerline_transform <- usmap_transform(centerline)
+# 
+# # Create Dam Map
+# dam_map = plot_usmap(fill = "black", alpha = 0.5, color = "white", size = 1,
+#            include= c("GA","FL", "AL"), labels = TRUE) +
+#   labs(title = "Chattahooche Centerline", subtitle = "Buford Dam to Brothers River") +
+#   geom_path(data = centerline_transform,
+#             aes(x = x, y = y),
+#             color = "red",
+#             size = 1) +
+#   lapply(dam_names, plot_dam)
+# 
+# dam_map
+# 
+# # Save Map
+# ggsave(dam_map,
+#        filename = 'exports/rivertransect.png',
+#        width = 5, height = 8)
 
 ```
 
@@ -150,40 +150,40 @@ ggsave(dam_map,
 
 ```{r station plot}
 # Function to remove empty columns of query
-rm_empty <- function(data){
-  empty_columns <- colSums(is.na(data) | data == "") == nrow(data)
-  return(data[, !empty_columns])
-}
-stations <- read.csv(station_file,colClasses=c("character")) # read as character to keep leading zeros
-if (usgs_prefix) {
-  # remove USGS-prefix
-  station_nums <- unlist(strsplit(stations$site_no, split='-'))[c(FALSE, TRUE)]
-} else {
-  station_nums <- stations$site_no
-}
-station_nums <- unlist(lapply(station_nums, pad0))
-station_data <- readNWISsite(station_nums)
-station_data <- rm_empty(station_data)
+# rm_empty <- function(data){
+#   empty_columns <- colSums(is.na(data) | data == "") == nrow(data)
+#   return(data[, !empty_columns])
+# }
+# stations <- read.csv(station_file,colClasses=c("character")) # read as character to keep leading zeros
+# if (usgs_prefix) {
+#   # remove USGS-prefix
+#   station_nums <- unlist(strsplit(stations$site_no, split='-'))[c(FALSE, TRUE)]
+# } else {
+#   station_nums <- stations$site_no
+# }
+# station_nums <- unlist(lapply(station_nums, pad0))
+# station_data <- readNWISsite(station_nums)
+# station_data <- rm_empty(station_data)
 
 # To export information on stations to csv
-write.csv(station_data, "exports/valencius_chattahoochee_usgs_stations.csv", row.names=FALSE)
-
-station_transform = usmap_transform(station_data, 
-                                      input_names = c("dec_long_va", "dec_lat_va"))
-
-station_map <- plot_usmap(fill = "black", alpha = 0.5, color = "white", size = 1, 
-           include= c("GA","FL", "AL"), labels = TRUE) +
-  labs(title = "USGS Station Locations") +
-  geom_path(data = centerline_transform,
-            aes(x = x, y = y),
-            color = "red",
-            size = 1) +
-  geom_point(data = station_transform,
-              aes(x = x, y = y),
-              color = "yellow",
-             shape=4)
-
-station_map
+# write.csv(station_data, "exports/valencius_chattahoochee_usgs_stations.csv", row.names=FALSE)
+# 
+# station_transform = usmap_transform(station_data, 
+#                                       input_names = c("dec_long_va", "dec_lat_va"))
+# 
+# station_map <- plot_usmap(fill = "black", alpha = 0.5, color = "white", size = 1, 
+#            include= c("GA","FL", "AL"), labels = TRUE) +
+#   labs(title = "USGS Station Locations") +
+#   geom_path(data = centerline_transform,
+#             aes(x = x, y = y),
+#             color = "red",
+#             size = 1) +
+#   geom_point(data = station_transform,
+#               aes(x = x, y = y),
+#               color = "yellow",
+#              shape=4)
+# 
+# station_map
 
 # Save Map
 # ggsave(station_map,
@@ -195,28 +195,28 @@ station_map
 
 ```{r station info}
 ## Get daily discharge data ##
-dv <- readNWISdv(station_nums, dv_parameters, startDate, endDate, statCd = statCd)
-dv_filtered <- data.frame(dv["site_no"], 
-                          dv["Date"],
-                          dv["X_00060_00003"]) # X_00060_00003 will need to change depending on your stat codes
+# dv <- readNWISdv(station_nums, dv_parameters, startDate, endDate, statCd = statCd)
+# dv_filtered <- data.frame(dv["site_no"], 
+#                           dv["Date"],
+#                           dv["X_00060_00003"]) # X_00060_00003 will need to change depending on your stat codes
 ## Get water quality data ##
-wq <- readWQPqw(paste0("USGS-", station_nums), wq_parameters, startDate, endDate)
+# wq <- readWQPqw(paste0("USGS-", station_nums), wq_parameters, startDate, endDate)
 
 #stations <- read.table(station_file, header = TRUE, colClasses = "character")
 
 ## Get daily discharge data ##
-names(dv_filtered) <- c("site_no", "date", "discharge")
+# names(dv_filtered) <- c("site_no", "date", "discharge")
 
 # Strip 'USGS-' identifier from station numbers
-wq["MonitoringLocationIdentifier"] <- lapply(list(wq[["MonitoringLocationIdentifier"]]), substring,
-                                               first = 6)
-wq_filtered <- data.frame(wq["MonitoringLocationIdentifier"],
-                            wq["ActivityStartDate"],
-                            wq["ResultMeasureValue"])
-names(wq_filtered) <- c("site_no","date", "sscmgL")
+# wq["MonitoringLocationIdentifier"] <- lapply(list(wq[["MonitoringLocationIdentifier"]]), substring,
+#                                                first = 6)
+# wq_filtered <- data.frame(wq["MonitoringLocationIdentifier"],
+#                             wq["ActivityStartDate"],
+#                             wq["ResultMeasureValue"])
+# names(wq_filtered) <- c("site_no","date", "sscmgL")
 ## To export station data to csv ##
-write.csv(dv_filtered, "exports/stations_from_file/valencius_discharge.csv", row.names=FALSE)
-write.csv(wq_filtered, "exports/stations_from_file/valencius_ssc.csv", row.names=FALSE)
+# write.csv(dv_filtered, "exports/stations_from_file/valencius_discharge.csv", row.names=FALSE)
+# write.csv(wq_filtered, "exports/stations_from_file/valencius_ssc.csv", row.names=FALSE)
 ```
 
 ## Automatically extract SSC and Q from stations
@@ -763,7 +763,7 @@ ssc_combined <-
 ssc_combined
 
 ## Save combined plot ##
-ggsave(ssc_co,bined, 
-       filename = 'exports/ssc_usgs_landsat.png',
+ggsave(ssc_combined, 
+       filename = paste0(wd_root, '/exports/ssc_USGSxLandsat.png'),
        width = 8, height = 5)
 ```

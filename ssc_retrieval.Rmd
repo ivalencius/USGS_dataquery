@@ -5,7 +5,7 @@ author: "Ilan Valencius"
 date: "2022-06-16"
 ---
 
-# Use: "For retrieving USGS suspended sediment concentration and discharge data along a river transect"
+# Use: "For retrieving USGS suspended sediment concentration and discharge data along a river transect and integrating with landsat derived SSC measurements"
 
 ## Import Packages
 
@@ -31,6 +31,7 @@ library(GISTools)
 library(rgeos)
 library(tidyr)
 library(qpcR)
+library(scales)
 ```
 
 ## Set up imports
@@ -60,8 +61,8 @@ centerline_kml <- "D:/valencig/Thesis/Data/chattahoochee_shape/chattahoochee_cen
 # dam_read_dir <- "D:/valencig/Thesis/Data/chattahoochee_shape/dams/"
 
 # When you want station info
-startDate <- "1990-01-01"
-endDate <- "1995-01-01"
+startDate <- "1985-01-01"
+endDate <- "2023-01-01"
 
 ## Query parameters for station data ##
 
@@ -225,12 +226,12 @@ if(!dir.exists(wd_root)){
 
 ```{r load data}
 ## Run if you have previously saved data from {r get basin} ##
-# save_dir <- paste0(wd_root, '/variables/')
-# load(file=paste0(save_dir, 'riverdata.Rdata'))
-# load(file=paste0(save_dir, 'nwis_stations.Rdata'))
-# load(file=paste0(save_dir, 'wqp_stations.Rdata'))
-# load(file=paste0(save_dir, 'SSC_full.Rdata'))
-# load(file=paste0(save_dir, 'Q_full.Rdata'))
+save_dir <- paste0(wd_root, '/variables/')
+load(file=paste0(save_dir, 'riverdata.Rdata'))
+load(file=paste0(save_dir, 'nwis_stations.Rdata'))
+load(file=paste0(save_dir, 'wqp_stations.Rdata'))
+load(file=paste0(save_dir, 'SSC_full.Rdata'))
+load(file=paste0(save_dir, 'Q_full.Rdata'))
 ```
 
 ```{r fix line2network fxn}
@@ -370,7 +371,8 @@ ut_names <- paste0("USGS-",lapply(riverdata$UT_WQP$comid, pad0))
 # merge with nwis sites
 mc_names <- unique(append(mc_names, riverdata$UM_nwissite$identifier))
 ut_names <- unique(append(ut_names, riverdata$UT_nwissite$identifier))
-# Remove mislabelled sites outside of the watershed (remove from ut and mc)
+
+# Remove mislabelled sites outside of the watershed (remove from ut and mc) 
 mc_names <- mc_names[- match("USGS-02297310",mc_names)]
 mc_names <- mc_names[- match("USGS-02297272",mc_names)]
 mc_names <- mc_names[- match("USGS-03298550",mc_names)]
@@ -378,6 +380,14 @@ ut_names <- ut_names[- match("USGS-02297310",ut_names)]
 ut_names <- ut_names[- match("USGS-02297272",ut_names)]
 ut_names <- ut_names[- match("USGS-03298550",ut_names)]
 ut_names <- ut_names[- match("USGS-02296750",ut_names)]
+ut_names <- ut_names[- match("USGS-02047783",ut_names)]
+ut_names <- ut_names[- match("USGS-03435970",ut_names)]
+ut_names <- ut_names[- match("USGS-03291310",ut_names)]
+ut_names <- ut_names[- match("USGS-03437900",ut_names)]
+ut_names <- ut_names[- match("USGS-02130840",ut_names)]
+ut_names <- ut_names[- match("USGS-02308865",ut_names)]
+ut_names <- ut_names[- match("USGS-02349900",ut_names)]
+ut_names <- ut_names[- match("USGS-02350080",ut_names)]
 
 ## Get Dicharge Data ##riverdata$UM_nwissite$identifier
 Q_mc <- data.table(readNWISdv(gsub("USGS-", "", mc_names), 
@@ -412,11 +422,13 @@ SSC_wqp_mc <- data.table(readWQPdata(siteNumbers=mc_names,
                 ))[,":=" (
                   site_no = MonitoringLocationIdentifier,
                   date = ActivityStartDate,
-                  sscmgmL = ResultMeasureValue,
+                  sscmg_L = ResultMeasureValue,
                   portal = 'WQP',
                   channel = 'MAIN STEM'
-                )][,.(site_no, date, sscmgmL, portal, channel)]
+                )][,.(site_no, date, sscmg_L, portal, channel)]
 
+# May need to save as a few different variables (ex foo1, foo2, foo3) and rbind() 
+# because WQP can't handle large requests (limit to 1000 site numbers at a time)
 SSC_wqp_ut <- data.table(readWQPdata(siteNumbers=ut_names, 
                 parameterCd = wq_parameters,
                 startDate = startDate,
@@ -424,10 +436,11 @@ SSC_wqp_ut <- data.table(readWQPdata(siteNumbers=ut_names,
                 ))[,":=" (
                   site_no = MonitoringLocationIdentifier,
                   date = ActivityStartDate,
-                  sscmgmL = ResultMeasureValue,
+                  sscmg_L = ResultMeasureValue,
                   portal = 'WQP',
                   channel = 'TRIBUTARY'
-                )][,.(site_no, date, sscmgmL, portal, channel)]
+                )][,.(site_no, date, sscmg_L, portal, channel)]
+
 # Remove main channel sites from ut sites
 SSC_wqp_ut <- anti_join(SSC_wqp_ut, SSC_wqp_mc, by="site_no")
 
@@ -470,6 +483,7 @@ mc_wqp <- data.table(whatWQPsites(siteid=mc_wqp_names))[,":="(
     elevation_m = VerticalMeasure.MeasureValue *0.3048, # ft -> m
     channel="MAIN STEM"
   )][,.(portal, site_no, station_nm, site_code, lat, lon, drainage_area_km2, elevation_m, channel)]
+
 ut_wqp <- data.table(whatWQPsites(siteid=ut_wqp_names))[,":="(
     portal = "WQP",
     site_no = MonitoringLocationIdentifier,
@@ -481,6 +495,7 @@ ut_wqp <- data.table(whatWQPsites(siteid=ut_wqp_names))[,":="(
     elevation_m = VerticalMeasure.MeasureValue *0.3048, # ft -> m
     channel="TRIBUTARY"
   )][,.(portal, site_no, station_nm, site_code, lat, lon, drainage_area_km2, elevation_m, channel)]  
+
 ## Map gauge location to river distance ##
 # trace(line2network, edit=T) --> comment out following two lines
 # suppressMessages(out <- removemicrosegs(out))
@@ -490,6 +505,7 @@ nldi_proj4 <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84"
 AKalbers <- "+proj=aea +lat_1=55 +lat_2=65 +lat_0=50 +lon_0=-154
     +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs +ellps=GRS80 +towgs84=0,0,0"
 river_center <- line2network(S1, reproject=AKalbers)
+
 # Apply projection to mc nwis sites then convert into meter projection
 mc_nwis_spatial <- mc_nwis
 mc_nwis_spatial$lat <- as.numeric(mc_nwis_spatial$lat)
@@ -499,6 +515,7 @@ proj4string(mc_nwis_spatial) <- '+init=epsg:4326'
 mc_nwis_spatial <- spTransform(mc_nwis_spatial, CRS(AKalbers))
 mc_nwis_spatial <- as.data.frame(mc_nwis_spatial)
 nwis_riv <- xy2segvert(x=mc_nwis_spatial$lon, y=mc_nwis_spatial$lat, rivers=river_center)
+
 # Do the same for mc wqp sites
 mc_wqp_spatial <- mc_wqp
 mc_wqp_spatial$lat <- as.numeric(mc_wqp_spatial$lat)
@@ -540,7 +557,7 @@ mc_wqp$dist_downstream_km <- wqp_riv$dist_downstream_km
 nwis_stations <- rbind(mc_nwis, ut_nwis, fill=TRUE)
 wqp_stations <- rbind(mc_wqp, ut_wqp, fill=TRUE)
 
-## Map stationd distances to Q and SSC measurements ##
+## Map station distances to Q and SSC measurements ##
 Q_full <- left_join(Q_full, nwis_stations)
 SSC_full <- left_join(SSC_full, wqp_stations)
 
@@ -749,21 +766,29 @@ ggsave(dam_flowline_map,
 
 ## Import landsata data and harmonize with USGS data
 
+# ISSUE: NEED TO REDUCE BY DAY HERE --> actually I dont
+
 ```{r landsat import}
 landsat_data <- data.table(read.csv(landsat_csv))[,':='(
   lat=Latitude,
-  lon=Longitude
-)][,.(SSC_mgL, month, year, distance_km, lat, lon)]
+  lon=Longitude,
+  date=sample_dt
+)][,.(SSC_mgL, date, year, distance_km, lat, lon)]
+
+landsat_data$year_chunk <- cut(as.numeric(landsat_data$year), seq(from = 1985, to = 2026, by = 5), right=FALSE)
+landsat_data <- landsat_data %>% mutate(SSC_mgL=replace(SSC_mgL, SSC_mgL>=10000, NA))
 
 ## Filter data to time of interest stamp ##
 # Remember dates are in YYYY-MM-DD format
 landsat_data_filter <- landsat_data %>% 
-  # Filter by year
-  filter(year<=as.numeric(substr(endDate, 1, 4))) %>%
-  filter(year>=as.numeric(substr(startDate, 1, 4))) %>%
-  # Filter by month for end years
-  filter(!(year==as.numeric(substr(startDate, 1, 4)) & month<as.numeric(substr(startDate, 6, 7)))) %>%
-  filter(!(year==as.numeric(substr(endDate, 1, 4)) & month>as.numeric(substr(endDate, 6, 7))))
+  filter(as.Date(date)>=as.Date(startDate)) %>%
+  filter(as.Date(date)<=as.Date(endDate))
+  # # Filter by year
+  # filter(year<=as.numeric(substr(endDate, 1, 4))) %>%
+  # filter(year>=as.numeric(substr(startDate, 1, 4))) %>%
+  # # Filter by month for end years
+  # filter(!(year==as.numeric(substr(startDate, 1, 4)) & month<as.numeric(substr(startDate, 6, 7)))) %>%
+  # filter(!(year==as.numeric(substr(endDate, 1, 4)) & month>as.numeric(substr(endDate, 6, 7))))
 
 ### THEMES- From Evan Dethier ###
 theme_facet <- theme_bw() +
@@ -786,8 +811,20 @@ season_facet <- theme_facet + theme(
   strip.text = element_text(hjust = 0, margin = margin(0,0,0,0, unit = 'pt'))
 )
 
+lm_eqn <- function(m){
+  eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+                   list(a = format(unname(coef(m)[1]), digits = 4),
+                        b = format(unname(coef(m)[2]), digits = 4),
+                        r2 = format(summary(m)$r.squared, digits = 4)))
+  as.character(as.expression(eq));
+}
+```
+
+# Start making plots
+
+```{r}
 SSC_full$dist_downstream_km <- as.numeric(SSC_full$dist_downstream_km)
-SSC_full$sscmgmL <- as.numeric(SSC_full$sscmgmL)
+SSC_full$sscmg_L <- as.numeric(SSC_full$sscmg_L)
 
 ## Create Plots ##
 ssc_landsat_plot <- ggplot(landsat_data_filter, aes(x = distance_km, y = SSC_mgL)) +
@@ -799,7 +836,7 @@ ssc_landsat_plot <- ggplot(landsat_data_filter, aes(x = distance_km, y = SSC_mgL
          y = 'SSC (mg/L)')
 ssc_landsat_plot
 
-ssc_usgs_plot <- ggplot(data=drop_na(SSC_full), aes(x = dist_downstream_km, y = sscmgmL)) +
+ssc_usgs_plot <- ggplot(data=drop_na(SSC_full), aes(x = dist_downstream_km, y = sscmg_L)) +
     geom_point() +
     stat_summary(
       geom = 'point',
@@ -807,7 +844,8 @@ ssc_usgs_plot <- ggplot(data=drop_na(SSC_full), aes(x = dist_downstream_km, y = 
       col = 'red',
       size = 3,
       shape = 24,
-      fill = 'red') +
+      fill = 'red',
+      na.rm=T) +
     season_facet +
     labs(title = 'SSC Concentration - Chattahoochee River',
          caption = paste0(startDate, ' to ', endDate),
@@ -816,24 +854,40 @@ ssc_usgs_plot <- ggplot(data=drop_na(SSC_full), aes(x = dist_downstream_km, y = 
 ssc_usgs_plot
 
 # Combine data into one dataframe for one plot
-plot_data <- landsat_data_filter
-usgs_dist <- drop_na(SSC_full)$dist_downstream_km
-usgs_sscmgmL <- drop_na(SSC_full)$sscmgmL
-plot_data <- qpcR:::cbind.na(plot_data, usgs_dist)
-plot_data <- qpcR:::cbind.na(plot_data, usgs_sscmgmL)
+# plot_data <- landsat_data_filter
+# usgs_dist <- drop_na(SSC_full)$dist_downstream_km
+# usgs_sscmg_L <- drop_na(SSC_full)$sscmg_L
+# plot_data <- qpcR:::cbind.na(plot_data, usgs_dist)
+# plot_data <- qpcR:::cbind.na(plot_data, usgs_sscmg_L)
+# plot_data$year_chunk <- cut(as.numeric(plot_data$year), seq(from = 1985, to = 2026, by = 5), right=FALSE)
 
+SSC_main <- SSC_full %>% filter(channel == 'MAIN STEM')
+SSC_main$year_chunk <- cut(as.numeric(format(as.Date(SSC_main$date), "%Y")), seq(from = 1985, to = 2026, by = 5), right=FALSE)
+# Get mean usgs ssc for each year
+# Need to get mean for each distance then across the whole transect
+ssc_mean <- data.table(year_chunk = unique(SSC_main$year_chunk), MN = as.numeric()) %>% arrange(year_chunk)
+ssc_mean$false_int <- c(1,2,3,4,5,6,7,8)
+
+for (year_subset in unique(landsat_data_filter$year_chunk)){
+  year_data <- landsat_data_filter %>% filter(year_chunk == year_subset)
+  x_means <-  year_data %>% group_by(distance_km) %>% summarize(x_ssc = mean(SSC_mgL, na.rm=T))
+  ssc_mean[ssc_mean$year_chunk==year_subset,]$MN <- mean(x_means$x_ssc)
+}
+
+# plot_data
 ssc_combined <- 
-    ggplot(plot_data, aes(x = distance_km, y = SSC_mgL)) +
+    ggplot(landsat_data_filter, aes(x = distance_km, y = SSC_mgL)) +
       stat_summary(
         aes(x = distance_km, y = SSC_mgL, color='Landsat Derived Mean SSC'),
         geom = 'line', 
         fun = 'mean',
         inherit.aes = FALSE,
-        show.legend=TRUE) +
-      #geom_point(data = drop_na(plot_data), aes(x = usgs_dist, y = usgs_sscmgmL)) +
+        show.legend=TRUE,
+        na.rm=T) +
+      #geom_point(data = drop_na(plot_data), aes(x = usgs_dist, y = usgs_sscmg_L)) +
         stat_summary(
-          data = plot_data,
-          aes(x = usgs_dist, y = usgs_sscmgmL, color='1 standard Error'),
+          data = SSC_main,
+          aes(x = dist_downstream_km, y = sscmg_L, color='1 standard Error'),
           geom = 'errorbar',
           fun.data= mean_se,
           fun.args = list(mult = 1), # mult = # of standard errors
@@ -841,24 +895,38 @@ ssc_combined <-
           width =  30,
           #color = 'green',
           inherit.aes = FALSE,
-          show.legend=TRUE) +
+          show.legend=TRUE,
+          na.rm=T) +
         stat_summary(
-          data = drop_na(plot_data),
-          aes(x = usgs_dist, y = usgs_sscmgmL, color='USGS Derived Mean SSC'),
+          data = SSC_main,
+          aes(x = dist_downstream_km, y = sscmg_L, color='USGS Derived Mean SSC'),
           geom = 'point',
           fun= 'mean',
           #size = 3,
           #shape=24,
           inherit.aes = FALSE,
           show.legend=TRUE,
-          fill = 'purple') +
+          fill = 'purple',
+          na.rm=T) +
+        stat_summary(
+          data = SSC_main,
+          aes(x = dist_downstream_km, y = sscmg_L, color='USGS Derived Mean SSC'),
+          geom = 'line',
+          fun= 'mean',
+          #size = 3,
+          #shape=24,
+          inherit.aes = FALSE,
+          show.legend=TRUE,
+          na.rm=T) +
+      # Mean value of USGS ssc
+      geom_hline(data=ssc_mean, aes(yintercept = MN, color='Mean Landsat SSC for whole transect'), linetype="dotted") +
       season_facet +
+      facet_wrap(~year_chunk, scales = "free_y") +
       theme(
         legend.position = "bottom"
       ) +
       guides(color=guide_legend("Key")) +
-      scale_color_manual(values = c("green", "red", "#5ab4ac")) +
-      #scale_y_continuous(limits = c(0, 1000)) + # IGNORING SOME OUTLIERS
+      scale_color_manual(values = c("green", "red", "black","#5ab4ac")) +
       labs(title = 'SSC Concentration - Chattahoochee River',
            caption = paste0(startDate, ' to ', endDate),
            x = 'Distance Downstream (km)', 
@@ -866,8 +934,539 @@ ssc_combined <-
 
 ssc_combined
 
+# Plot mean SSC over time
+lm_ssc <- function(df){
+    m <- lm(MN ~ false_int, df);
+    eq <- substitute(italic('Mean SSC') == b %.% italic('(Years since 1985)/5')+a*","~~italic(r)^2~"="~r2, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             r2 = format(summary(m)$r.squared, digits = 3)))
+    as.character(as.expression(eq));
+}
+
+mean_ssc_plot <- ggplot(data = ssc_mean, aes(x=year_chunk, y=MN)) +
+  geom_line(group=1) +
+  geom_smooth(mapping=aes(x=false_int, y=MN), method = "lm", se=FALSE, color="red", formula = y ~ x) +
+  geom_label(x = 6, y = 55, label = lm_ssc(ssc_mean), parse = T) +
+  season_facet +
+  labs(title='Landsat Derived Mean SSC Along Chattahoochee Transect',
+       x='Year Grouping',
+       y='Average SSC (mg/L)')
+
+mean_ssc_plot
+
 ## Save combined plot ##
 ggsave(ssc_combined, 
        filename = paste0(wd_root, '/exports/ssc_USGSxLandsat.png'),
-       width = 8, height = 5)
+       width = 12, height = 6)
+
+## Save mean_ssc plot ##
+ggsave(mean_ssc_plot, 
+       filename = paste0(wd_root, '/exports/landsat_mean_ssc.png'),
+       width = 12, height = 6)
+
+```
+
+## Investigate SSC flux at the mouth of the river
+
+```{r SSC flux (mouth)}
+# Prepare Q data
+Q_full_mc <- Q_full %>% filter(channel=='MAIN STEM')
+Q_full_mc$year_chunk <- cut(as.numeric(format(as.Date(Q_full_mc$date), "%Y")), seq(from = 1985, to = 2026, by = 5), right=FALSE)
+Q_full_mc$flow <- as.numeric(Q_full_mc$flow)
+Q_full_mc$dist_downstream_km <- as.integer(as.numeric(Q_full_mc$dist_downstream_km))
+
+# Prepare SSC data
+SSC_full_mc <- SSC_full %>% filter(channel=='MAIN STEM')
+SSC_full_mc$year_chunk <- cut(as.numeric(format(as.Date(SSC_full_mc$date), "%Y")), seq(from = 1985, to = 2026, by = 5), right=FALSE)
+SSC_full_mc$sscmg_L <- as.numeric(SSC_full_mc$sscmg_L)
+SSC_full_mc$dist_downstream_km <- as.integer(as.numeric(SSC_full_mc$dist_downstream_km))
+
+# List unique ssc distances/q distances to create a rating curve
+q_dists <- unique(Q_full_mc$dist_downstream_km)
+ssc_dists <- unique(SSC_full_mc$dist_downstream_km)
+similar_dists <- sort(intersect(q_dists, ssc_dists))
+last_dist <- similar_dists[length(similar_dists)]
+
+# Get station number at that distance
+mouth_site <- SSC_full_mc[dist_downstream_km==last_dist,][1]$site_no
+mouth_ssc <- SSC_full_mc %>% filter(site_no==mouth_site)
+mouth_q <- Q_full_mc %>% filter(site_no==mouth_site)
+
+# Need to convert  flow ft^3/2 to m^3/2
+mouth_q$flow_m3s <- mouth_q$flow * 0.02832
+
+# Create training data
+ssc_q <- left_join(mouth_ssc, dplyr::select(mouth_q, c(date, flow_m3s)), by= "date")
+ssc_q$SSC_flux_MTyr <- ssc_q$flow_m3s * ssc_q$sscmg_L * 3.10585 * 10**-5
+ssc_q$log10_SSC_flux_MTyr <- log10(ssc_q$SSC_flux_MTyr)
+ssc_q$log10_discharge_m3s  <- log10(ssc_q$flow_m3s)
+
+# To get accurate means reduce to get average per day then average over the whole year
+ssc_day_avg <- ssc_q %>% group_by(date) %>% 
+  summarise_at(c("SSC_flux_MTyr","log10_SSC_flux_MTyr","log10_discharge_m3s","flow_m3s","sscmg_L"), mean) %>%
+  left_join(subset(ssc_q, 
+                   select=-c(SSC_flux_MTyr, log10_SSC_flux_MTyr, log10_discharge_m3s, flow_m3s, sscmg_L)), by="date") %>%
+  distinct()
+
+# Save training data
+write.csv(ssc_q, paste0(wd_root,"/exports/", mouth_site,".csv"), row.names=FALSE)
+write.csv(ssc_day_avg, paste0(wd_root,"/exports/", mouth_site,"_reduced_by_day.csv"), row.names=FALSE)
+
+# Create flux plot not on rating curve
+ssc_flux <- ggplot(ssc_day_avg, aes(x=format(as.Date(ssc_day_avg$date), "%Y"), y=SSC_flux_MTyr)) +
+  # geom_point() +
+  stat_summary(geom = 'line', fun = 'mean', group=1, aes(color="Average SSC Flux (MT/yr)")) +
+  stat_summary(geom = 'errorbar', aes(color='1 standard Error'), fun.data= mean_se,
+               fun.args = list(mult = 1), # mult = # of standard errors
+               size = 0.5,
+               width =  0.2,
+               show.legend=TRUE) +
+  # coord_cartesian(ylim=c(0,3)) +
+  scale_color_manual(values = c("green", "red")) +
+  season_facet +
+  labs(title="SSC Flux at the Mouth of \nthe Chattahoochee (MT/yr)",
+       caption=paste0('USGS Site ',mouth_site))
+
+ssc_flux
+
+ggsave(ssc_flux, 
+       filename = paste0(wd_root, paste0('/exports/USGS-',mouth_site,'_flux.png')),
+       width = 12, height = 8)
+
+# Create rating curve
+reg = lm(log10_SSC_flux_MTyr~log10_discharge_m3s, data=ssc_q)
+
+# Plot regression
+
+reg_plot = ggplot(ssc_q, aes(x = log10_discharge_m3s, y=log10_SSC_flux_MTyr)) +
+  geom_point(color='green') +
+  geom_smooth(method='lm', formula= y~x, color='black') +
+  annotate(geom='text',label = lm_eqn(reg), parse = TRUE, x = -Inf, y = Inf, hjust = -0.2, vjust = 2) +
+  theme_bw() +
+  scale_fill_manual(values = c('gray'), name = "Metrics")  +
+  labs(title=paste0('Rating Curve for Station USGS-',mouth_site),
+       caption=paste0(startDate,' to ', endDate))
+
+ggsave(reg_plot, 
+       filename = paste0(wd_root, paste0('/exports/USGS-',mouth_site,'.png')),
+       width = 10, height = 8)
+
+# Apply regression to discharge data
+mouth_q$log10_discharge_m3s <- log10(mouth_q$flow_m3s)
+
+ssc_flux = predict.lm(reg, newdata=mouth_q)
+mouth_q$log10_SSC_flux_MTyr <- ssc_flux
+mouth_q$SSC_flux_MTyr <- 10**ssc_flux
+mouth_q$SSC_mgL <- (10**ssc_flux) / (mouth_q$flow_m3s * 3.10585 * 10**-5)
+mouth_q$log10_SSC_mgL <- log10((10**ssc_flux) / (mouth_q$flow_m3s * 3.10585 * 10**-5))
+
+pred <- mouth_q
+# Save predicted data
+write.csv(pred, paste0(wd_root,"/exports/", mouth_site,"_ssc_pred.csv"), row.names=FALSE)
+
+# Plot SSC flux over time
+ssc_flux_plot <- ggplot(pred, aes(x=year_chunk, y=SSC_flux_MTyr)) +
+  # geom_point() +
+  stat_summary(geom = 'line', fun = 'mean', group=1, aes(color="Average SSC Flux (MT/yr)")) +
+  stat_summary(geom = 'errorbar', aes(color='1 standard Error'), fun.data= mean_se,
+               fun.args = list(mult = 1), # mult = # of standard errors
+               size = 0.5,
+               width =  0.2,
+               show.legend=TRUE) +
+  coord_cartesian(ylim=c(0,1.2)) +
+  scale_color_manual(values = c("green", "red")) +
+  season_facet +
+  labs(title="Rating Curve Derived SSC\nFlux at the Mouth of \nthe Chattahoochee (MT/yr)",
+       caption=paste0('USGS Site ',mouth_site))
+
+ssc_flux_plot
+
+ggsave(ssc_flux_plot, 
+       filename = paste0(wd_root, paste0('/exports/USGS-',mouth_site,'_rating_flux.png')),
+       width = 12, height = 8)
+
+# Plot discharge over time
+# Got annual flow from https://waterdata.usgs.gov/nwis/annual?referred_module=sw&amp;site_no=02359170&amp;por_02359170_26942=2396790,00060,26942,1977,2022&amp;start_dt=1984&amp;end_dt=2022&amp;year_type=W&amp;format=html_table&amp;date_format=YYYY-MM-DD&amp;rdb_compression=file&amp;submitted_form=parameter_selection_list
+annual_q <- data.table(year=seq(1984,2021), flow_ft3s=c(
+  31460,
+  16070,
+  19050,
+  25600,
+  16380,
+  19270,
+  29040,
+  26200,
+  21590,
+  28180,
+  30900,
+  26820,
+  26300,
+  24250,
+  36860,
+  18020,
+  10990,
+  16890,
+  10560,
+  28960,
+  18170,
+  35230,
+  16330,
+  12420,
+  14010,
+  23590,
+  32160,
+  12100,
+  9715,
+  22340,
+  25360,
+  18680,
+  28020,
+  19050,
+  30210,
+  32090,
+  29210
+))
+annual_q$flow_m3s <- annual_q$flow_ft3s * 0.02832
+
+discharge_plot<- ggplot(annual_q, aes(x=year, y=flow_m3s)) +
+  stat_summary(geom = 'line', fun = 'mean', group=1) +
+  season_facet +
+  coord_cartesian(ylim=c(0,1100)) +
+  labs(title="Average Discharge at the Mouth of the Chattahoochee (m3/s)",
+       x="year") +
+  stat_summary(aes(label=round(..y..,0)), fun='mean', geom="text", size=2,
+             vjust = -1) 
+
+ggsave(discharge_plot, 
+       filename = paste0(wd_root, paste0('/exports/USGS-',mouth_site,'_discharge.png')),
+       width = 20, height = 8)
+
+```
+
+## Investigate SSC FLux along the whole river transect
+
+```{r ssc flux (transect)}
+# Import transect topography
+transect_topo <- read.csv("D:\\valencig\\Thesis\\Data\\chattahoochee_landsat\\chattahoochee_transect_topo.csv")
+# Cant convert to km2 because cell size varies with latitude
+transect_topo <- data.frame(
+  distance_km = as.numeric(transect_topo$distance_km),
+  elev_min = as.numeric(transect_topo$elev_min),
+  flow_acc_max= as.numeric(transect_topo$flow_acc_max) 
+  
+)
+
+# Need to convert  flow ft^3/2 to m^3/2
+Q_full_mc$flow_m3s <- Q_full_mc$flow * 0.02832
+
+# Convert distance downstream to nearest 2 km to match with landsat data
+Q_full_mc$dist_downstream_2km <- round(Q_full_mc$dist_downstream_km/2)*2
+
+# ggplot(Q_full_mc, aes(x=dist_downstream_km, y=flow_m3s)) +
+#   stat_summary(geom='line', fun='mean', na.rm=T) +
+#   facet_wrap(~year_chunk)
+
+# Merge flow data with landsat data
+# landsat_flux <- landsat_data_filter %>% dplyr::select(-c(lat, lon))
+landsat_flux <- left_join(landsat_data_filter, 
+                          subset(Q_full_mc, select=c(date, dist_downstream_2km, flow_m3s)), 
+                          by=c('date', 'distance_km'='dist_downstream_2km'))
+# Merge topographic data with landat data
+landsat_flux <- left_join(landsat_flux, transect_topo, by="distance_km")
+# Set identifier for distances with flux
+landsat_flux$in_situ_flow <- F
+landsat_flux[!is.na(flow_m3s),]$in_situ_flow <- T
+
+# Get discharge vs Q curve
+dates <- as.Date(unique(landsat_flux[landsat_flux$in_situ_flow==T, ]$date))
+# Convert to dates
+# dates$date <- as.Date(dates$date)
+landsat_flux$date <- as.Date(landsat_flux$date)
+
+scale_flow <- function(.x, dist) {
+  .x$flow_m3s_scale = rescale(.x$flow_m3s, to = c(0, 1))
+  # Want to normalize so 1 is max flow at mouth
+  # If max flow not at the end of the river set flag
+  # This happens when we don't have data at end of the river or there is a large surge upstream
+  last_point <- .x %>% filter(flow_m3s_scale == max(flow_m3s_scale))
+
+  # Case where max flow is continuous across multiple points along river (happens in special case)
+  if (length(last_point$distance_km) > 1){
+    .x$good_end_q = F
+  }
+  # Max flow at last point on river
+  else if (last_point$distance_km == dist){
+    .x$good_end_q = T
+  }
+  # Max flow not at last point of river
+  else{
+    .x$good_end_q = F
+  }
+  
+  return(.x)
+}
+
+# Get in situ flow measurements
+Q_drainage_data <- landsat_flux %>% 
+  # filter(in_situ_flow == T, date %in% dates[230:232]) %>%
+  filter(in_situ_flow == T) %>%
+  subset(select=c(distance_km, flow_m3s, date))
+
+# Match site of flow measurement to Hydrosheds flow accumulation data
+dist_specific_topo <- transect_topo %>% filter(distance_km %in% unique(Q_drainage_data$distance_km))
+Q_drainage_data <- left_join(Q_drainage_data, dist_specific_topo, by="distance_km")
+max_dist <- 676#max(Q_drainage_data$distance_km)
+
+# To compare SHAPE of curve, scale flow data to 0-1
+Q_drainage_data <- Q_drainage_data %>% 
+  group_by(date) %>%
+  group_modify(~scale_flow(., max_dist)) %>%
+  # grouo_by(date) %>%
+  # group_modify(~last_max(., max(Q_drainage_data$distance_km))) %>%
+  filter(good_end_q == T) %>%
+  subset(select= -c(good_end_q))
+
+# Stores start of lake Seminole which impacts discharge in a weird way
+woodruff_basin <- data.frame(flow_acc_max=124868, 
+                             dist=Q_drainage_data[Q_drainage_data$flow_acc_max ==124868,]$distance_km[1])
+dead_lakes <- data.frame(flow_acc_max=254057,
+                         dist = Q_drainage_data[Q_drainage_data$flow_acc_max ==254057,]$distance_km[1])
+
+# Split data into before and after lake seminole
+Q_drainage_data$seminole = T
+Q_drainage_data[Q_drainage_data$distance_km < woodruff_basin$dist,]$seminole = F
+# Split into before an after dead lakes
+Q_drainage_data$dead = F
+Q_drainage_data[Q_drainage_data$distance_km >= dead_lakes$dist,]$dead = T
+
+# Generate regression between drainage and flow:
+flowvdrainage_preseminole <- lm(flow_m3s_scale~flow_acc_max, 
+                                data=Q_drainage_data %>% filter(seminole==F, dead==F))
+flowvdrainage_seminole <- lm(flow_m3s_scale~flow_acc_max, 
+                             data=Q_drainage_data %>% filter(seminole==T, dead==F))
+flowvdrainage_dead <- lm(flow_m3s_scale~flow_acc_max, 
+                             data=Q_drainage_data %>% filter(dead==T))
+
+# Store regression coefficients
+pre_coef <- flowvdrainage_preseminole$coefficients
+sem_coef <- flowvdrainage_seminole$coefficients
+dead_coef <- flowvdrainage_dead$coefficients
+
+# Make plot
+flowvdrainge_reg_plot <- ggplot(Q_drainage_data, aes(x=flow_acc_max, y=flow_m3s_scale)) +
+  coord_cartesian(ylim=c(0,1)) +
+  # Add regression and annotate (pre lake seminole)
+  geom_smooth(data=Q_drainage_data %>% filter(seminole==F, dead==F),
+              method = "lm", se=T, color="red", formula = y ~ x) +
+  annotate(geom='text',label = parse(text=paste("Pre ~Lake~Seminole:~",
+                                                lm_eqn(flowvdrainage_preseminole))),
+           parse = TRUE, x = 1000, y = 1, hjust = 0, vjust = 1) +
+  geom_point(data=Q_drainage_data %>% filter(seminole==F, dead==F),
+             aes(color="Pre Lake Seminole")) +
+  # Add regression and annotate (lake seminole)
+  geom_smooth(data=Q_drainage_data %>% filter(seminole==T, dead==F),
+              method = "lm", se=T, color="purple", formula = y ~ x) +
+  annotate(geom='text',label = parse(text=paste("Lake ~Seminole:~",
+                                                lm_eqn(flowvdrainage_seminole))),
+           parse = TRUE, x = 1000, y = 0.95, hjust = 0, vjust = 1) +
+  geom_point(data=Q_drainage_data %>% filter(seminole==T, dead==F),
+             aes(color="Lake Seminole")) +
+  # Add regression and annotate (past dead lakes)
+  geom_smooth(data=Q_drainage_data %>% filter(dead==T),
+              method = "lm", se=T, color="green", formula = y ~ x) +
+  annotate(geom='text',label = parse(text=paste("Post ~Lake~ ~Seminole~ ~(dead~ ~lakes):~",
+                                                lm_eqn(flowvdrainage_dead))),
+           parse = TRUE, x = 1000, y = 0.90, hjust = 0, vjust = 1) +
+  # geom_vline(xintercept=woodruff_basin$flow_acc_max) +
+  geom_point(data=Q_drainage_data %>% filter(dead==T),
+             aes(color="Dead Lakes")) +
+  season_facet +
+  # Get whole transect average
+  stat_summary(fun='mean', geom="line")
+
+flowvdrainge_reg_plot
+
+# ggplot(transect_topo, aes(x=distance_km, y=flow_acc_max)) +
+#   geom_line() +
+#   geom_vline(xintercept=woodruff_basin$dist)
+
+### Apply Continuous Q to rest of dataset ###
+
+# Split data into before and after lake seminole
+landsat_flux$seminole = T
+landsat_flux[landsat_flux$distance_km < woodruff_basin$dist,]$seminole = F
+# Split into before an after dead lakes
+landsat_flux$dead = F
+landsat_flux[landsat_flux$distance_km >= dead_lakes$dist,]$dead = T
+
+# CAN USE INTERCEPTS OF REG FUNCTIONS TO USE STATIONS WHICH DONT END AT MOUTH OF RIVER
+# Ex: only have station at 638 km (dead lakes) --> from reg we know that value there
+# will be (-7.893e+01)+(3.135e-04)*254057 or predict(flowvdrainage_dead, DRAINAGE@638)
+scale_flow_reverse <- function(.x, dist) {
+  .x$flow_m3s_scale = rescale(.x$flow_m3s, to = c(0, 1))
+  # Reverse scale
+}
+
+reverse_scale_flow <- function(.x) {
+  in_situ_flow <- .x %>% filter(in_situ_flow == T)
+  foo <<- in_situ_flow
+  # Case 1: no flow measurements at that day
+  if (nrow(in_situ_flow) == 0) {
+    .x$reverse_scaled = F
+    return(.x)
+  }
+  # Case 2: there is a flow measurement
+  # Normalize from 0 to the last flow measurement (should be max, there are a few cases where this isnt true --> ignore)
+  # Don't overwrite in-situ measurements because we have higher confidence with them
+  .x[.x$in_situ_flow==F,]$flow_m3s = rescale(.x[.x$in_situ_flow==F,]$flow_m3s_scale, 
+                                to = c(0, in_situ_flow[in_situ_flow$distance_km == max(in_situ_flow$distance_km),]$flow_m3s[1]))
+  .x$reverse_scaled = T
+  return(.x)
+}
+
+# To compare SHAPE of curve, scale flow data to 0-1
+landsat_flux$flow_m3s_scale <- -1
+# pre-seminole regression
+landsat_flux[landsat_flux$seminole==F & landsat_flux$dead==F, ]$flow_m3s_scale <- 
+  predict(flowvdrainage_preseminole, landsat_flux[landsat_flux$seminole==F & landsat_flux$dead==F, ])
+# seminole regression
+landsat_flux[landsat_flux$seminole==T & landsat_flux$dead==F, ]$flow_m3s_scale <- 
+  predict(flowvdrainage_seminole, landsat_flux[landsat_flux$seminole==T & landsat_flux$dead==F, ])
+# post-seminole regression
+landsat_flux[landsat_flux$dead==T, ]$flow_m3s_scale <- 
+  predict(flowvdrainage_preseminole, landsat_flux[landsat_flux$dead==T, ])
+
+landsat_flux <- landsat_flux %>%
+  group_by(date) %>%
+  group_modify(~reverse_scale_flow(.))
+  
+# Compare landsat Q vs in-situ Q to make sure regression worked
+Q_compare_plot <- ggplot(Q_drainage_data, aes(x=distance_km, y=flow_m3s)) +
+  stat_summary(fun='mean', geom="line", aes(color="in-situ"))+
+  stat_summary(data=landsat_flux, fun='mean', geom="line", aes(color="landsat regressed")) +
+  season_facet +
+  labs(title="Comparison of in-situ and regressed discharge")
+
+Q_compare_plot
+
+# Save plots
+ggsave(flowvdrainge_reg_plot, 
+       filename = paste0(wd_root, '/exports/Q_vs_drainage_reg.png'),
+       width=12, height=8)
+
+ggsave(Q_compare_plot, 
+       filename = paste0(wd_root, '/exports/Q_vs_drainage_reg.png'),
+       width=12, height=8)
+```
+
+# Continue investigating flux at every point
+
+```{r}
+# Determine flux at every point
+landsat_flux$SSC_flux_MTyr <- landsat_flux$flow_m3s * landsat_flux$SSC_mgL * 3.10585 * 10**-5
+
+# Reduce and get average for one sample per day
+landsat_day_avg <- landsat_flux %>% group_by(distance_km, date) %>% 
+  summarise_at(c("SSC_flux_MTyr","flow_m3s","SSC_mgL"), mean) %>%
+  left_join(subset(landsat_flux, 
+                   select=-c(SSC_flux_MTyr, flow_m3s, SSC_mgL)), by=c("date", "distance_km")) %>%
+  distinct()
+
+transect_flux_plot <- ggplot(landsat_day_avg, 
+                             aes(x=distance_km, y=SSC_flux_MTyr, color="Landsat Derived\nSSC Flux (MT/yr)")) +
+  # geom_point() +
+  stat_summary(geom = 'line', fun = 'mean', group=1, aes(color="Average SSC Flux (MT/yr)"), na.rm=T) +
+  # stat_summary(geom = 'errorbar', aes(color='1 standard Error'), fun.data= mean_se,
+  #              fun.args = list(mult = 1), # mult = # of standard errors
+  #              size = 0.5,
+  #              width =  0.2,
+  #              show.legend=TRUE) +
+  # coord_cartesian(ylim=c(0,2)) +
+  scale_color_manual(values = c("green")) +
+  season_facet +
+  facet_wrap(~year_chunk) +
+  labs(title="SSC Flux along the Chattahoochee Transect",
+       caption="Reduced to one average sample per day per transect section.")
+
+transect_flux_plot
+
+transect_flow_plot <- ggplot(landsat_day_avg, 
+                             aes(x=distance_km, y=flow_m3s, color="Flow_m3s")) +
+  # geom_point() +
+  stat_summary(geom = 'line', fun = 'mean', group=1, na.rm=T) +
+  scale_color_manual(values = c("red")) +
+  season_facet +
+  facet_wrap(~year_chunk) +
+  labs(title="Discharge along the Chattahoochee Transect",
+       caption="Reduced to one average sample per day per transect section.")
+
+transect_flow_plot
+
+# USGS Station is roughly 10 km upstream, add 2 km buffer
+landsat_mouth <- landsat_day_avg %>% 
+  filter(distance_km<=max(landsat_day_avg$distance_km)-8 & distance_km>=max(landsat_day_avg$distance_km)-12)
+
+landsat_flux_mouth_plot <- ggplot(landsat_mouth, aes(x=year_chunk, y=SSC_flux_MTyr, color="Landsat Derived\nSSC Flux (MT/yr)")) +
+  # geom_point() +
+  stat_summary(geom = 'line', fun = 'mean', group=1, aes(color="Landsat Derived\nSSC Flux (MT/yr)")) +
+  stat_summary(geom = 'errorbar', aes(color='1 standard Error'), fun.data= mean_se,
+               fun.args = list(mult = 1), # mult = # of standard errors
+               size = 0.5,
+               width =  0.2,
+               show.legend=TRUE) +
+  # coord_cartesian(ylim=c(0,2)) +
+  scale_color_manual(values = c("green", "purple")) +
+  season_facet +
+  labs(title="SSC Flux at the mouth of the chattahoochee",
+       caption="Reduced to one average sample per day.")
+
+landsat_flux_mouth_plot
+
+# Combine with no rating curve in-situ measurements
+mouth_flux_compare <- ggplot(landsat_mouth, aes(x=year_chunk, y=SSC_flux_MTyr)) +
+  # geom_point() +
+  stat_summary(geom = 'line', fun = 'mean', group=1, aes(color="Landsat Derived\nSSC Flux (MT/yr)")) +
+  stat_summary(geom = 'errorbar', 
+               aes(color='1 standard deviation'), 
+               fun.data= mean_sdl,
+               fun.args = list(mult = 1), # mult = # of standard errors
+               size = 0.5,
+               width =  0.2,
+               show.legend=TRUE) +
+  # geom_point() +
+  stat_summary(data=ssc_day_avg, geom = 'line', fun = 'mean', group=1, aes(x=year_chunk, y=SSC_flux_MTyr, color="In-Situ SSC Flux (MT/yr)")) +
+  stat_summary(data=ssc_day_avg, 
+               geom = 'errorbar', 
+               aes(x=year_chunk, y=SSC_flux_MTyr, color='1 standard deviation'), 
+               fun.data= mean_sdl,
+               fun.args = list(mult = 1), # mult = # of standard errors
+               size = 0.5,
+               width =  0.2,
+               show.legend=TRUE) +
+  season_facet +
+  coord_cartesian(ylim=c(0, 5)) +
+  scale_color_manual(values = c("green", "purple","red")) +
+  labs(title="SSC Flux at the mouth of the chattahoochee",
+       caption="Reduced to one average sample per day.",
+       x="year")
+
+mouth_flux_compare 
+
+# Save plots
+ggsave(transect_flux_plot, 
+       filename = paste0(wd_root, '/exports/transect_flux.png'),
+       width=12, height=8)
+
+ggsave(transect_flow_plot, 
+       filename = paste0(wd_root, '/exports/transect_flow.png'),
+       width = 12, height = 8)
+
+ggsave(landsat_flux_mouth_plot, 
+       filename = paste0(wd_root, '/exports/landsat_mouth_flux.png'),
+       width = 12, height = 8)
+
+ggsave(mouth_flux_compare , 
+       filename = paste0(wd_root, '/exports/mouth_flux_compare_year_chunk.png'),
+       width = 20, height = 8)
 ```

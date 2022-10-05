@@ -1360,7 +1360,7 @@ landsat_flux[landsat_flux$seminole==F & landsat_flux$dead==F, ]$flow_m3s_scale <
 # seminole regression
 landsat_flux[landsat_flux$seminole==T & landsat_flux$dead==F, ]$flow_m3s_scale <- 
   predict(flowvdrainage_seminole, landsat_flux[landsat_flux$seminole==T & landsat_flux$dead==F, ])
-# post-seminole regression
+# Re-apply pre-seminole regression
 landsat_flux[landsat_flux$dead==T, ]$flow_m3s_scale <- 
   predict(flowvdrainage_seminole, landsat_flux[landsat_flux$dead==T, ])
 
@@ -1371,7 +1371,7 @@ landsat_flux <- landsat_flux %>%
 # Compare landsat Q vs in-situ Q to make sure regression worked
 Q_compare_plot <- ggplot(Q_drainage_data, aes(x=distance_km, y=flow_m3s)) +
   stat_summary(fun='mean', geom="line", aes(color="in-situ"))+
-  stat_summary(data=landsat_flux, fun='mean', geom="line", aes(color="landsat regressed")) +
+  # stat_summary(data=landsat_flux, fun='mean', geom="line", aes(color="landsat regressed")) +
   season_facet +
   labs(title="Comparison of in-situ and regressed discharge")
 
@@ -1385,6 +1385,137 @@ ggsave(flowvdrainge_reg_plot,
 ggsave(Q_compare_plot, 
        filename = paste0(wd_root, '/exports/Q_vs_drainage_reg.png'),
        width=12, height=8)
+```
+
+```{r}
+# Baseline Attempt --> create discharge vs. drainage curve every day
+naive_reg <- function(.x){
+  in_situ_flow <- .x %>% filter(in_situ_flow == T)
+  # Case 1: no in-situ flow measurements at that day
+  # Issue: around 700 of 1650 dates of landsat sample do not have in-situ flow information
+  if (nrow(in_situ_flow) == 0) {
+    .x$reverse_scaled = F
+    return(.x)
+  }
+  # Case 2: There are flow measurements, perform linear regression
+  reg <- lm(flow_m3s~flow_acc_max, data = in_situ_flow)
+  .x[.x$in_situ_flow == F, ]$flow_m3s <- predict(reg, .x[.x$in_situ_flow == F,])
+  return(.x)
+}
+
+landsat_flux <- landsat_flux %>%
+  group_by(date) %>%
+  group_modify(~naive_reg(.)) 
+# %>% 
+#   filter(flow_m3s_predict>=0)
+
+ggplot(landsat_flux, aes(x=distance_km, y=flow_m3s)) +
+  # geom_point() + 
+  stat_summary(fun='mean', geom="line", aes(color="regressed")) +
+  stat_summary(data = Q_drainage_data, fun='mean', geom="line", aes(color="in-situ")) +
+  season_facet +
+  # coord_cartesian(ylim=c(0,750)) +
+  labs(title="Comparison of in-situ and regressed discharge")
+
+```
+# Attempt to get continuous Q in a different manner
+
+Reasoning: Drainage has a relationship with distance so get discharge directly
+from average distance v. discharge (see below plot). Use the line between each
+in-situ sampling location as its own regression (to deal with non-linearity of dams)
+
+```{r}
+Q_v_dist_plot <- ggplot(Q_drainage_data, aes(x=distance_km, y=flow_m3s_scale)) +
+  geom_point() + 
+  stat_summary(fun='mean', geom="line", aes(color="in-situ"))+
+  season_facet +
+  labs(title="Comparison of in-situ and regressed discharge")
+
+Q_v_dist_plot
+
+landsat_flux <- left_join(landsat_data_filter, 
+                          subset(Q_full_mc, select=c(date, dist_downstream_2km, flow_m3s)), 
+                          by=c('date', 'distance_km'='dist_downstream_2km'))
+
+# Merge topographic data with landat data
+landsat_flux <- left_join(landsat_flux, transect_topo, by="distance_km")
+# Set identifier for distances with flux
+landsat_flux$in_situ_flow <- F
+landsat_flux[!is.na(flow_m3s),]$in_situ_flow <- T
+
+# Add 0 flow at start of river
+plot_data <- ggplot_build(Q_v_dist_plot)$data[[2]] %>% rename(dist=x, flow_m3s_scale=y) %>% subset(select=c("dist", "flow_m3s_scale"))
+
+rd <- rbind(data.frame(dist = 0, flow_m3s_scale=0), plot_data)
+
+# Need 3 regressions, before seminole, in lake seminole, after lake seminole
+
+# d <- rd$dist
+# f <- rd$flow_m3s_scale
+# 
+# # Convert this reg_data into a piece-wise function (just do it manually)
+# m <- 0
+# b <- 0
+# QD_pw <- function(in_situ, dist){
+#   if(in_situ){
+#     return(NA)
+#   } 
+#   if (dist >= 0 & dist < 18){
+#     m <- (f[2]-f[1])/(d[2]-d[1])
+#     b <- 0
+#   } else if (dist >= 18 & dist < 34) {
+#     m <- (f[3]-f[2])/(d[3]-d[2])
+#     b <- f[2]
+#   }
+#   else if (dist >= 34 & dist < 48) {
+#     m <- (f[4]-f[3])/(d[4]-d[3])
+#     b <- f[3]
+#   } else if (dist >= 48 & dist < 52) {
+#     m <- (f[5]-f[4])/(d[5]-d[4])
+#     b <- f[4]
+#   } else if (dist >= 52 & dist < 56) {
+#     m <- (f[6]-f[5])/(d[6]-d[5])
+#     b <- f[5]
+#   } else if (dist >= 56 & dist < 64) {
+#     m <- (f[7]-f[6])/(d[7]-d[6])
+#     b <- f[6]
+#   } else if (dist >= 64 & dist < 70) {
+#     m <- (f[8]-f[7])/(d[8]-d[7])
+#     b <- f[7]
+#   }
+#   # apply slope
+#   y <- dist*m + b
+#   return(y) 
+# }
+QD_pwv <- Vectorize(QD_pw)
+landsat_flux$flow_m3s_scale_raw <- QD_pwv(landsat_flux$in_situ_flow, landsat_flux$distance_km)
+
+ggplot(landsat_flux, aes(x=distance_km, y=flow_m3s_scale_raw)) + 
+  geom_point() +
+  stat_summary(fun='mean', geom="line")
+
+# Do I need to vectorize??
+# QD_pwv <- Vectorize(QD_pw)
+
+# scale_landsat_flow <- function(x){
+#   # x is landsat_flux data grouped by date
+#   
+#   # Step 1: Extract landsat data with in-situ flow
+#   x_insitu <- x %>% filter(in_situ_flow == T)
+#   
+#   # Step 2: need to scale standardized regression to few in-situ points (shift vertically)
+#   
+#   
+#   for(i in 2:nrow(reg_coef)){
+#     # Get (x1, y1) and (x2, y2)
+#     point_1 <- reg_coef[i-1]
+#     point_2 <- reg_ceof[i]
+# }
+
+landsat_flux <- landsat_flux %>%
+  group_by(date) %>%
+  group_modify(~scale_landsat_flow(.))
+
 ```
 
 # Continue investigating flux at every point

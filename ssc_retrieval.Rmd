@@ -1146,7 +1146,7 @@ ggsave(discharge_plot,
 
 ## Investigate SSC FLux along the whole river transect
 
-```{r ssc flux (transect)}
+```{r}
 # Import transect topography
 transect_topo <- read.csv("D:\\valencig\\Thesis\\Data\\chattahoochee_landsat\\chattahoochee_transect_topo.csv")
 # Cant convert to km2 because cell size varies with latitude
@@ -1177,344 +1177,75 @@ landsat_flux <- left_join(landsat_flux, transect_topo, by="distance_km")
 # Set identifier for distances with flux
 landsat_flux$in_situ_flow <- F
 landsat_flux[!is.na(flow_m3s),]$in_situ_flow <- T
+landsat_flux$flow_m3s_log10 <- log10(landsat_flux$flow_m3s)
+landsat_flux$flow_acc_log10 <- log10(landsat_flux$flow_acc_max)
 
-# Get discharge vs Q curve
-dates <- as.Date(unique(landsat_flux[landsat_flux$in_situ_flow==T, ]$date))
-# Convert to dates
-# dates$date <- as.Date(dates$date)
-landsat_flux$date <- as.Date(landsat_flux$date)
-
-scale_flow <- function(.x, dist) {
-  .x$flow_m3s_scale = rescale(.x$flow_m3s, to = c(0, 1))
-  # Want to normalize so 1 is max flow at mouth
-  # If max flow not at the end of the river set flag
-  # This happens when we don't have data at end of the river or there is a large surge upstream
-  last_point <- .x %>% filter(flow_m3s_scale == max(flow_m3s_scale))
-
-  # Case where max flow is continuous across multiple points along river (happens in special case)
-  if (length(last_point$distance_km) > 1){
-    .x$good_end_q = F
-  }
-  # Max flow at last point on river
-  else if (last_point$distance_km == dist){
-    .x$good_end_q = T
-  }
-  # Max flow not at last point of river
-  else{
-    .x$good_end_q = F
-  }
-  
-  return(.x)
+# Create folder to hold regression plots
+wd_continuous_Q <- paste0(wd_root, '/exports/continuous_Q_reg/')
+if(!dir.exists(wd_continuous_Q)){
+    dir.create(wd_continuous_Q)
 }
 
-# Get in situ flow measurements
-Q_drainage_data <- landsat_flux %>% 
-  # filter(in_situ_flow == T, date %in% dates[230:232]) %>%
-  filter(in_situ_flow == T) %>%
-  subset(select=c(distance_km, flow_m3s, date))
+# Fill in Q_full_mc data
+Q_full_mc$flow_m3s_log10 <- log10(Q_full_mc$flow_m3s)
+names(Q_full_mc)[names(Q_full_mc) == "dist_downstream_2km"] <- "distance_km"
+Q_full_mc <- left_join(Q_full_mc, transect_topo, by=("distance_km"))
+Q_full_mc$flow_acc_log10 <- log10(as.numeric(Q_full_mc$flow_acc_max))
+# Remove NaN values created from log10
+Q_full_mc <- Q_full_mc %>% filter(is.finite(flow_m3s_log10))
 
-# Match site of flow measurement to Hydrosheds flow accumulation data
-dist_specific_topo <- transect_topo %>% filter(distance_km %in% unique(Q_drainage_data$distance_km))
-Q_drainage_data <- left_join(Q_drainage_data, dist_specific_topo, by="distance_km")
-max_dist <- 676#max(Q_drainage_data$distance_km)
-
-# To compare SHAPE of curve, scale flow data to 0-1
-Q_drainage_data <- Q_drainage_data %>% 
-  group_by(date) %>%
-  group_modify(~scale_flow(., max_dist)) %>%
-  # grouo_by(date) %>%
-  # group_modify(~last_max(., max(Q_drainage_data$distance_km))) %>%
-  filter(good_end_q == T) %>%
-  subset(select= -c(good_end_q))
-
-# Stores start of lake Seminole which impacts discharge in a weird way
-woodruff_basin <- data.frame(flow_acc_max=124868, 
-                             dist=Q_drainage_data[Q_drainage_data$flow_acc_max ==124868,]$distance_km[1])
-dead_lakes <- data.frame(flow_acc_max=254057,
-                         dist = Q_drainage_data[Q_drainage_data$flow_acc_max ==254057,]$distance_km[1])
-
-# Split data into before and after lake seminole
-Q_drainage_data$seminole = T
-Q_drainage_data[Q_drainage_data$distance_km < woodruff_basin$dist,]$seminole = F
-# Split into before an after dead lakes
-Q_drainage_data$dead = F
-Q_drainage_data[Q_drainage_data$distance_km >= dead_lakes$dist,]$dead = T
-
-# Generate regression between drainage and flow:
-flowvdrainage_preseminole <- lm(flow_m3s_scale~flow_acc_max, 
-                                data=Q_drainage_data %>% filter(seminole==F, dead==F))
-flowvdrainage_seminole <- lm(flow_m3s_scale~flow_acc_max, 
-                             data=Q_drainage_data %>% filter(seminole==T, dead==F))
-flowvdrainage_dead <- lm(flow_m3s_scale~flow_acc_max, 
-                             data=Q_drainage_data %>% filter(dead==T))
-
-# Store regression coefficients
-pre_coef <- flowvdrainage_preseminole$coefficients
-sem_coef <- flowvdrainage_seminole$coefficients
-dead_coef <- flowvdrainage_dead$coefficients
-
-# Make plot
-flowvdrainge_reg_plot <- ggplot(Q_drainage_data, aes(x=flow_acc_max, y=flow_m3s_scale)) +
-  coord_cartesian(ylim=c(0,1)) +
-  # Add regression and annotate (pre lake seminole)
-  geom_smooth(data=Q_drainage_data %>% filter(seminole==F, dead==F),
-              method = "lm", se=T, color="red", formula = y ~ x) +
-  annotate(geom='text',label = parse(text=paste("Pre ~Lake~Seminole:~",
-                                                lm_eqn(flowvdrainage_preseminole))),
-           parse = TRUE, x = 1000, y = 1, hjust = 0, vjust = 1) +
-  geom_point(data=Q_drainage_data %>% filter(seminole==F, dead==F),
-             aes(color="Pre Lake Seminole")) +
-  # Add regression and annotate (lake seminole)
-  geom_smooth(data=Q_drainage_data %>% filter(seminole==T, dead==F),
-              method = "lm", se=T, color="purple", formula = y ~ x) +
-  annotate(geom='text',label = parse(text=paste("Lake ~Seminole:~",
-                                                lm_eqn(flowvdrainage_seminole))),
-           parse = TRUE, x = 1000, y = 0.95, hjust = 0, vjust = 1) +
-  geom_point(data=Q_drainage_data %>% filter(seminole==T, dead==F),
-             aes(color="Lake Seminole")) +
-  # Add regression and annotate (past dead lakes)
-  geom_smooth(data=Q_drainage_data %>% filter(dead==T),
-              method = "lm", se=T, color="green", formula = y ~ x) +
-  annotate(geom='text',label = parse(text=paste("Post ~Lake~ ~Seminole~ ~(dead~ ~lakes):~",
-                                                lm_eqn(flowvdrainage_dead))),
-           parse = TRUE, x = 1000, y = 0.90, hjust = 0, vjust = 1) +
-  # geom_vline(xintercept=woodruff_basin$flow_acc_max) +
-  geom_point(data=Q_drainage_data %>% filter(dead==T),
-             aes(color="Dead Lakes")) +
-  season_facet +
-  # Get whole transect average
-  stat_summary(fun='mean', geom="line")
-
-flowvdrainge_reg_plot
-
-# ggplot(transect_topo, aes(x=distance_km, y=flow_acc_max)) +
-#   geom_line() +
-#   geom_vline(xintercept=woodruff_basin$dist)
-
-### Apply Continuous Q to rest of dataset ###
-
-# Split data into before and after lake seminole
-landsat_flux$seminole = T
-landsat_flux[landsat_flux$distance_km < woodruff_basin$dist,]$seminole = F
-# Split into before an after dead lakes
-landsat_flux$dead = F
-landsat_flux[landsat_flux$distance_km >= dead_lakes$dist,]$dead = T
-
-# CAN USE INTERCEPTS OF REG FUNCTIONS TO USE STATIONS WHICH DONT END AT MOUTH OF RIVER
-# Ex: only have station at 638 km (dead lakes) --> from reg we know that value there
-# will be (-7.893e+01)+(3.135e-04)*254057 or predict(flowvdrainage_dead, DRAINAGE@638)
-# scale_flow_reverse <- function(.x, dist) {
-#   .x$flow_m3s_scale = rescale(.x$flow_m3s, to = c(0, 1))
-#   # Reverse scale
-# }
-
-reverse_scale_flow <- function(.x) {
-  in_situ_flow <- .x %>% filter(in_situ_flow == T)
-  # Case 1: no in-situ flow measurements at that day
-  # Issue: around 700 of 1650 dates of landsat sample do not have in-situ flow information
-  if (nrow(in_situ_flow) == 0) {
-    .x$reverse_scaled = F
-    return(.x)
-  }
-  # Case 2: there is a flow measurement
-  # WORK TO NORMALIZE THIS BASED ON POSITION
-  # ex: last in-situ measurement is at start of lake seminole, we know the discharge
-  # at this point will be 65-69% on average 
-  # Take 1st measurement if a few in-situ samples at max distance
-  last_point <- in_situ_flow[in_situ_flow$distance_km == max(in_situ_flow$distance_km),][1,]
-  foo<<-last_point
-  # At a point, what is the average percent of flow expected based on regression
-  flow_percentage <- 0
-  # The simulated max discharge at the mouth of the river (flow @ non-max percent)/(flow percent)
-  max_flow <- 0
-  if (last_point$seminole == F & last_point$dead == F) {
-    # Use pre-seminole regression
-    flow_percentage <- predict(flowvdrainage_preseminole, last_point)
-    max_flow <- last_point$flow_m3s / flow_percentage
-  } else if(last_point$seminole == T & last_point$dead == F) {
-    # Seminole regression
-    flow_percentage <- predict(flowvdrainage_seminole, last_point)
-    max_flow <- last_point$flow_m3s / flow_percentage
-  } else if(last_point$dead == T) {
-    # Seminole regression
-    flow_percentage <- predict(flowvdrainage_dead, last_point)
-    max_flow <- last_point$flow_m3s / flow_percentage
-  }
-  foo2<<- flow_percentage
-  foo3<<- max_flow
-  
-  # Normalize from 0 to the last flow measurement (should be max, there are a few cases where this isnt true --> ignore)
-  # Don't overwrite in-situ measurements because we have higher confidence with them
-  .x[.x$in_situ_flow==F,]$flow_m3s = rescale(.x[.x$in_situ_flow==F,]$flow_m3s_scale, 
-                                to = c(0, max_flow))
-  .x$reverse_scaled = T
-  return(.x)
-}
-
-# To compare SHAPE of curve, scale flow data to 0-1
-landsat_flux$flow_m3s_scale <- NA
-
-# pre-seminole regression
-landsat_flux[landsat_flux$seminole==F & landsat_flux$dead==F, ]$flow_m3s_scale <- 
-  predict(flowvdrainage_preseminole, landsat_flux[landsat_flux$seminole==F & landsat_flux$dead==F, ])
-# seminole regression
-landsat_flux[landsat_flux$seminole==T & landsat_flux$dead==F, ]$flow_m3s_scale <- 
-  predict(flowvdrainage_seminole, landsat_flux[landsat_flux$seminole==T & landsat_flux$dead==F, ])
-# Re-apply pre-seminole regression
-landsat_flux[landsat_flux$dead==T, ]$flow_m3s_scale <- 
-  predict(flowvdrainage_seminole, landsat_flux[landsat_flux$dead==T, ])
-
-landsat_flux <- landsat_flux %>%
-  group_by(date) %>%
-  group_modify(~reverse_scale_flow(.))
-  
-# Compare landsat Q vs in-situ Q to make sure regression worked
-Q_compare_plot <- ggplot(Q_drainage_data, aes(x=distance_km, y=flow_m3s)) +
-  stat_summary(fun='mean', geom="line", aes(color="in-situ"))+
-  # stat_summary(data=landsat_flux, fun='mean', geom="line", aes(color="landsat regressed")) +
-  season_facet +
-  labs(title="Comparison of in-situ and regressed discharge")
-
-Q_compare_plot
-
-# Save plots
-ggsave(flowvdrainge_reg_plot, 
-       filename = paste0(wd_root, '/exports/Q_vs_drainage_reg.png'),
-       width=12, height=8)
-
-ggsave(Q_compare_plot, 
-       filename = paste0(wd_root, '/exports/Q_vs_drainage_reg.png'),
-       width=12, height=8)
-```
-
-```{r}
 # Baseline Attempt --> create discharge vs. drainage curve every day
 naive_reg <- function(.x){
-  in_situ_flow <- .x %>% filter(in_situ_flow == T)
+  # in_situ_flow <- .x %>% filter(in_situ_flow == T)
   # Case 1: no in-situ flow measurements at that day
   # Issue: around 700 of 1650 dates of landsat sample do not have in-situ flow information
-  if (nrow(in_situ_flow) == 0) {
-    .x$reverse_scaled = F
-    return(.x)
-  }
+  # if (nrow(in_situ_flow) == 0) {
+  #   .x$added_flow = F
+  #   return(.x)
+  # }
+  in_situ_flow <- Q_full_mc %>% filter(date==.x$date2[1])
   # Case 2: There are flow measurements, perform linear regression
-  reg <- lm(flow_m3s~flow_acc_max, data = in_situ_flow)
-  .x[.x$in_situ_flow == F, ]$flow_m3s <- predict(reg, .x[.x$in_situ_flow == F,])
+  reg <- lm(flow_m3s_log10~flow_acc_log10, data = in_situ_flow)
+  eq <- substitute(italic('Flow_m3s') == 10^a %.%italic('Hydroshed_pixels')^b, 
+         list(a = format(unname(coef(reg)[1]), digits = 3),
+              b = format(unname(coef(reg)[2]), digits = 3)))
+    
+  reg_plot = ggplot(in_situ_flow, aes(x=flow_acc_log10, y=flow_m3s_log10)) +
+    geom_point() +
+    geom_smooth(method = "lm", se=FALSE, color="green", formula = y ~ x) +
+    annotate(geom='text', label = as.character(as.expression(eq)), 
+             parse = T, x = -Inf, y = Inf, hjust = 0, vjust = 1) +
+    season_facet +
+    labs(title=paste0('Date', .x$date2[1]),
+        x='Drainage Area (log10 Hydroshed pixels)',
+        y='Discharge (log10 m3s)')
+  
+  # Save regression plot
+  ggsave(reg_plot, 
+       filename = paste(wd_continuous_Q, .x$date2[1], '.pdf'),
+       width = 8, height = 8)
+  .x[.x$in_situ_flow == F, ]$flow_m3s_log10 <- predict(reg, .x[.x$in_situ_flow == F,])
+  .x[.x$in_situ_flow == F, ]$flow_m3s <- 10**.x[.x$in_situ_flow == F,]$flow_m3s_log10
   return(.x)
 }
 
+# Add dummy date to access date inside of group modify
+landsat_flux$date2 <- landsat_flux$date
+
 landsat_flux <- landsat_flux %>%
   group_by(date) %>%
-  group_modify(~naive_reg(.)) 
+  group_modify(~naive_reg(.)) %>% 
+  subset(select=-c(date2))
 # %>% 
 #   filter(flow_m3s_predict>=0)
 
 ggplot(landsat_flux, aes(x=distance_km, y=flow_m3s)) +
   # geom_point() + 
   stat_summary(fun='mean', geom="line", aes(color="regressed")) +
-  stat_summary(data = Q_drainage_data, fun='mean', geom="line", aes(color="in-situ")) +
+  stat_summary(data = Q_full_mc, fun='mean', geom="line", aes(color="in-situ")) +
   season_facet +
   # coord_cartesian(ylim=c(0,750)) +
   labs(title="Comparison of in-situ and regressed discharge")
-
-```
-# Attempt to get continuous Q in a different manner
-
-Reasoning: Drainage has a relationship with distance so get discharge directly
-from average distance v. discharge (see below plot). Use the line between each
-in-situ sampling location as its own regression (to deal with non-linearity of dams)
-
-```{r}
-Q_v_dist_plot <- ggplot(Q_drainage_data, aes(x=distance_km, y=flow_m3s_scale)) +
-  geom_point() + 
-  stat_summary(fun='mean', geom="line", aes(color="in-situ"))+
-  season_facet +
-  labs(title="Comparison of in-situ and regressed discharge")
-
-Q_v_dist_plot
-
-landsat_flux <- left_join(landsat_data_filter, 
-                          subset(Q_full_mc, select=c(date, dist_downstream_2km, flow_m3s)), 
-                          by=c('date', 'distance_km'='dist_downstream_2km'))
-
-# Merge topographic data with landat data
-landsat_flux <- left_join(landsat_flux, transect_topo, by="distance_km")
-# Set identifier for distances with flux
-landsat_flux$in_situ_flow <- F
-landsat_flux[!is.na(flow_m3s),]$in_situ_flow <- T
-
-# Add 0 flow at start of river
-plot_data <- ggplot_build(Q_v_dist_plot)$data[[2]] %>% rename(dist=x, flow_m3s_scale=y) %>% subset(select=c("dist", "flow_m3s_scale"))
-
-rd <- rbind(data.frame(dist = 0, flow_m3s_scale=0), plot_data)
-
-# Need 3 regressions, before seminole, in lake seminole, after lake seminole
-
-# d <- rd$dist
-# f <- rd$flow_m3s_scale
-# 
-# # Convert this reg_data into a piece-wise function (just do it manually)
-# m <- 0
-# b <- 0
-# QD_pw <- function(in_situ, dist){
-#   if(in_situ){
-#     return(NA)
-#   } 
-#   if (dist >= 0 & dist < 18){
-#     m <- (f[2]-f[1])/(d[2]-d[1])
-#     b <- 0
-#   } else if (dist >= 18 & dist < 34) {
-#     m <- (f[3]-f[2])/(d[3]-d[2])
-#     b <- f[2]
-#   }
-#   else if (dist >= 34 & dist < 48) {
-#     m <- (f[4]-f[3])/(d[4]-d[3])
-#     b <- f[3]
-#   } else if (dist >= 48 & dist < 52) {
-#     m <- (f[5]-f[4])/(d[5]-d[4])
-#     b <- f[4]
-#   } else if (dist >= 52 & dist < 56) {
-#     m <- (f[6]-f[5])/(d[6]-d[5])
-#     b <- f[5]
-#   } else if (dist >= 56 & dist < 64) {
-#     m <- (f[7]-f[6])/(d[7]-d[6])
-#     b <- f[6]
-#   } else if (dist >= 64 & dist < 70) {
-#     m <- (f[8]-f[7])/(d[8]-d[7])
-#     b <- f[7]
-#   }
-#   # apply slope
-#   y <- dist*m + b
-#   return(y) 
-# }
-QD_pwv <- Vectorize(QD_pw)
-landsat_flux$flow_m3s_scale_raw <- QD_pwv(landsat_flux$in_situ_flow, landsat_flux$distance_km)
-
-ggplot(landsat_flux, aes(x=distance_km, y=flow_m3s_scale_raw)) + 
-  geom_point() +
-  stat_summary(fun='mean', geom="line")
-
-# Do I need to vectorize??
-# QD_pwv <- Vectorize(QD_pw)
-
-# scale_landsat_flow <- function(x){
-#   # x is landsat_flux data grouped by date
-#   
-#   # Step 1: Extract landsat data with in-situ flow
-#   x_insitu <- x %>% filter(in_situ_flow == T)
-#   
-#   # Step 2: need to scale standardized regression to few in-situ points (shift vertically)
-#   
-#   
-#   for(i in 2:nrow(reg_coef)){
-#     # Get (x1, y1) and (x2, y2)
-#     point_1 <- reg_coef[i-1]
-#     point_2 <- reg_ceof[i]
-# }
-
-landsat_flux <- landsat_flux %>%
-  group_by(date) %>%
-  group_modify(~scale_landsat_flow(.))
 
 ```
 

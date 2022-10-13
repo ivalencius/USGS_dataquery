@@ -32,6 +32,9 @@ library(rgeos)
 library(tidyr)
 library(qpcR)
 library(scales)
+library(vioplot)
+library(raster)
+library(units)
 ```
 
 ## Set up imports
@@ -1358,4 +1361,135 @@ ggsave(landsat_flux_mouth_plot,
 ggsave(mouth_flux_compare , 
        filename = paste0(wd_root, '/exports/mouth_flux_compare_year_chunk.png'),
        width = 20, height = 8)
+```
+# Save variables
+```{r}
+save(Q_full_mc, file=paste0(save_dir, "Q_full_mc.RData"))
+save(landsat_data_filter, file=paste0(save_dir, "landsat_data_filter.RData"))
+save(landsat_flux, file=paste0(save_dir, "landsat_flux.RData"))
+save(landsat_day_avg, file=paste0(save_dir, "landsat_day_avg.RData"))
+save(landsat_mouth, file=paste0(save_dir, "landsat_mouth.RData"))
+save(ssc_day_avg, file=paste0(save_dir, "ssc_day_avg.RData"))
+save(ssc_q, file=paste0(save_dir, "ssc_q.RData"))
+```
+
+# Investigate some stats using continuous discharge
+
+Use 'landsat_mouth' and 'ssc_day_avg' to avoid sampling bias
+
+```{r}
+t1 <- levels(landsat_flux$year_chunk)[1]
+t2 <- levels(landsat_flux$year_chunk)[8]
+
+ylims_landsat <- landsat_mouth %>%
+  group_by(year_chunk) %>%
+  summarise(Q1 = quantile(SSC_flux_MTyr, 1/4, na.rm=T), Q3 = quantile(SSC_flux_MTyr, 3/4, na.rm=T)) %>%
+  ungroup() %>%
+  #get lowest Q1 and highest Q3
+  summarise(lowQ1 = min(Q1), highQ3 = max(Q3))
+
+ylims_ssc <- ssc_day_avg %>%
+  group_by(year_chunk) %>%
+  summarise(Q1 = quantile(SSC_flux_MTyr, 1/4, na.rm=T), Q3 = quantile(SSC_flux_MTyr, 3/4, na.rm=T)) %>%
+  ungroup() %>%
+  #get lowest Q1 and highest Q3
+  summarise(lowQ1 = min(Q1), highQ3 = max(Q3))
+
+# Violin Plots 
+
+ggplot(landsat_mouth, aes(x=year_chunk, y=SSC_flux_MTyr)) +
+  # coord_cartesian(ylim=c(0,3)) +
+  coord_cartesian(ylim = as.numeric(ylims_ssc)*1.05) +
+  geom_violin(scale="count", aes(fill = year_chunk)) +
+  geom_boxplot(width=0.2, outlier.shape=NA) +
+  scale_fill_brewer(palette="Blues") + theme_classic()
+
+ggplot(ssc_day_avg, aes(x=year_chunk, y=SSC_flux_MTyr)) +
+  # coord_cartesian(ylim=c(0,3)) +
+  coord_cartesian(ylim = as.numeric(ylims_ssc)*1.05) +
+  geom_violin(scale="count", aes(fill = year_chunk)) +
+  geom_boxplot(width=0.2, outlier.shape=NA) +
+  scale_fill_brewer(palette="Blues") + theme_classic()
+
+# Side by side box plot
+ggplot(ssc_day_avg, aes(x=year_chunk, y=SSC_flux_MTyr, color="In-Situ")) +
+  # coord_cartesian(ylim=c(0,3)) +
+  coord_cartesian(ylim = as.numeric(ylims_ssc)*1.05) +
+  # geom_violin(scale="count", aes(fill = year_chunk)) +
+  geom_boxplot(width=0.2, outlier.shape=NA, position= position_nudge(x=-.13)) +
+  geom_boxplot(data=landsat_mouth, aes(color="Landsat"), width=0.2, outlier.shape=NA, position= position_nudge(x=+.13)) +
+  # Add labels for amount of observations
+  # geom_text(data = landsat_flux, aes(label=count), 
+  #           position=position_dodge(width=1.0)) +
+  scale_fill_brewer(palette="Blues") + theme_classic() +
+  labs(title="")
+
+```
+
+# Initalize data for time series comparison
+
+```{r}
+
+basin_area <- st_area(riverdata$basin) %>% set_units(km^2)
+
+### PRE-ANTHROPOGENIC ###
+
+# From octopusdata.org 
+# Octupus ID: S156WTS010 Sample ID: SAP66
+Be10E <- 9.15 %>% set_units(mm/kyr) %>% set_units(m/yr)
+Be10dE <- 2.15 %>% set_units(mm/kyr) %>% set_units(m/yr)
+
+# Get total flux over one year (using density of quartz, 2.648 g/cm^3)
+Be10flux <- (Be10E * set_units(basin_area, m^2) * set_units(2648, kg/m^3)) %>% set_units(Mt/yr)
+Be10dflux <- (Be10dE * set_units(basin_area, m^2) * set_units(2648, kg/m^3)) %>% set_units(Mt/yr)
+
+### PRE-DAM ###
+
+# From Trimble (1977), sourced originally from Dole and Stabler (1909)
+# They used assumed bulk density of 1440 kg/m^3 
+# Included 10% additional to account for Bed Load (B.L/)
+Tflux <- ((set_units(0.057, mm/yr) %>% set_units(m/yr)) 
+          * set_units(basin_area, m^2) 
+          * set_units(1440, kg/m^3)) %>% set_units(Mt/yr)
+
+### POST-DAM ###
+
+#USGS in-situ data (at station closest to mouth - USGS-02359170)
+USGSflux <- mean(ssc_day_avg$SSC_flux_MTyr) %>% set_units(Mt/yr)
+USGSdflux <- sd(ssc_day_avg$SSC_flux_MTyr) %>% set_units(Mt/yr)
+USGSQ <- mean(ssc_day_avg$flow_m3s) %>% set_units(m^3/s)
+USGSdQ <- sd(ssc_day_avg$flow_m3s) %>% set_units(m^3/s)
+USGSDisYield <- (USGSflux / basin_area) %>% set_units(t/(km^2*yr))
+USGSSSC <- mean(ssc_day_avg$sscmg_L) %>% set_units(mg/L)
+USGSdSSC <- sd(ssc_day_avg$sscmg_L) %>% set_units(mg/L)
+
+# Landsat Data (use last 10 km of the river)
+Landsatflux <- mean(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$SSC_flux_MTyr, na.rm=T) %>% set_units(Mt/yr)
+Landsatdflux <- sd(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$SSC_flux_MTyr, na.rm=T) %>% set_units(Mt/yr)
+LandsatQ <- mean(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+LandsatQ <- sd(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+LandsatSSC <- mean(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$SSC_mgL, na.rm=T) %>% set_units(mg/L)
+LandsatdSSC <- mean(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$SSC_mgL, na.rm=T) %>% set_units(mg/L)
+
+# Data from Milliman et. al
+MillimanQ <- (set_units(22, km^3/yr)) %>% set_units(m^3/s) # Average discharge
+MillimanTDS <- set_units(1.1, Mt/yr) # TDS load
+MillimanDisYield <- set_units(0.021*1000, t/(km^2*yr)) # They use basin area of 52,000 km^2 but use 52 as divisor, need to multiply by 1,000
+MillimanSSC <- set_units(50, mg/L) # Average SSC concentration
+
+# Flux Dataframe
+Timeflux <- data.frame(source=c("Reusser (2015)", "Trimble (1977)", "USGS", "Milliman (2013)", "Dethier (2020)"),
+                       flux=c(Be10flux, Tflux, USGSflux, MillimanTDS, Landsatflux),
+                       period=c("Pre-Antropogenic", "Pre-Dam", "Post-Dam", "Post-Dam", "Post-Dam"))
+Timeflux$period <- factor(Timeflux$period, levels = c("Pre-Antropogenic", "Pre-Dam", "Post-Dam"))
+Timeflux$source <- factor(Timeflux$source, levels = Timeflux$source)
+```
+
+# Create plots over time periods
+```{r}
+# Compare flux over three time periods
+ggplot(Timeflux, aes(x=source, y=flux, fill=period)) +
+  geom_bar(stat="identity", color="black") +
+  theme_minimal() +
+  scale_fill_manual(values=c('#999999','#E69F00','#9CDB79'))
 ```

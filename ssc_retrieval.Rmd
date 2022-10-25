@@ -113,6 +113,7 @@ wd_root <- paste0(wd_root, '/', startDate, '_', endDate)
 if(!dir.exists(wd_root)){
     dir.create(wd_root)
 }
+save_dir <- paste0(wd_root, '/variables/')
 ```
 
 ## Plot centerline transect
@@ -229,7 +230,6 @@ if(!dir.exists(wd_root)){
 
 ```{r load data}
 ## Run if you have previously saved data from {r get basin} ##
-save_dir <- paste0(wd_root, '/variables/')
 load(file=paste0(save_dir, 'riverdata.Rdata'))
 load(file=paste0(save_dir, 'nwis_stations.Rdata'))
 load(file=paste0(save_dir, 'wqp_stations.Rdata'))
@@ -767,9 +767,7 @@ ggsave(dam_flowline_map,
        width = 5, height = 8)
 ```
 
-## Import landsata data and harmonize with USGS data
-
-# ISSUE: NEED TO REDUCE BY DAY HERE --> actually I dont
+## Import landsata/Sentinel-2 data and harmonize with USGS data
 
 ```{r landsat import}
 landsat_data <- data.table(read.csv(landsat_csv))[,':='(
@@ -807,6 +805,14 @@ theme_facet <- theme_bw() +
     axis.text = element_text(size = 12), 
     plot.title = element_text(size = 13)
   )
+
+sentinel_data <- data.table(read.csv("D:\\valencig\\Thesis\\sentinel-ssc\\sentinel-calibration\\python\\no_scaling\\regression\\lasso_full_sqrt.csv"))[,':='(
+  SSC_mgL = pred_SSC_mgL,
+  year = format(as.Date(date), "%Y")
+)][,.(SSC_mgL, date, year, distance_km, lat, lon)]
+
+# Filter out SSC measurements above 10*4.5
+sentinel_data <- sentinel_data %>% filter(SSC_mgL <31622)
 
 season_facet <- theme_facet + theme(
   #legend.position = 'none', 
@@ -972,7 +978,7 @@ ggsave(mean_ssc_plot,
 
 ## Investigate SSC flux at the mouth of the river
 
-```{r SSC flux (mouth)}
+```{r}
 # Prepare Q data
 Q_full_mc <- Q_full %>% filter(channel=='MAIN STEM')
 Q_full_mc$year_chunk <- cut(as.numeric(format(as.Date(Q_full_mc$date), "%Y")), seq(from = 1985, to = 2026, by = 5), right=FALSE)
@@ -1183,10 +1189,26 @@ landsat_flux[!is.na(flow_m3s),]$in_situ_flow <- T
 landsat_flux$flow_m3s_log10 <- log10(landsat_flux$flow_m3s)
 landsat_flux$flow_acc_log10 <- log10(landsat_flux$flow_acc_max)
 
+# Merge flow data with sentinel data
+sentinel_flux <- left_join(sentinel_data, 
+                          subset(Q_full_mc, select=c(date, dist_downstream_2km, flow_m3s)), 
+                          by=c('date', 'distance_km'='dist_downstream_2km'))
+# Merge topographic data with landat data
+sentinel_flux <- left_join(sentinel_flux, transect_topo, by="distance_km")
+# Set identifier for distances with flux
+sentinel_flux$in_situ_flow <- F
+sentinel_flux[!is.na(flow_m3s),]$in_situ_flow <- T
+sentinel_flux$flow_m3s_log10 <- log10(sentinel_flux$flow_m3s)
+sentinel_flux$flow_acc_log10 <- log10(sentinel_flux$flow_acc_max)
+
 # Create folder to hold regression plots
-wd_continuous_Q <- paste0(wd_root, '/exports/continuous_Q_reg/')
-if(!dir.exists(wd_continuous_Q)){
-    dir.create(wd_continuous_Q)
+wd_landsat_Q <- paste0(wd_root, '/exports/landsat_Q_reg/')
+if(!dir.exists(wd_landsat_Q)){
+    dir.create(wd_landsat_Q)
+}
+wd_sentinel_Q <- paste0(wd_root, '/exports/sentinel_Q_reg/')
+if(!dir.exists(wd_sentinel_Q)){
+    dir.create(wd_sentinel_Q)
 }
 
 # Fill in Q_full_mc data
@@ -1198,7 +1220,7 @@ Q_full_mc$flow_acc_log10 <- log10(as.numeric(Q_full_mc$flow_acc_max))
 Q_full_mc <- Q_full_mc %>% filter(is.finite(flow_m3s_log10))
 
 # Baseline Attempt --> create discharge vs. drainage curve every day
-naive_reg <- function(.x){
+naive_reg <- function(.x, dir){
   # in_situ_flow <- .x %>% filter(in_situ_flow == T)
   # Case 1: no in-situ flow measurements at that day
   # Issue: around 700 of 1650 dates of landsat sample do not have in-situ flow information
@@ -1225,7 +1247,7 @@ naive_reg <- function(.x){
   
   # Save regression plot
   ggsave(reg_plot, 
-       filename = paste(wd_continuous_Q, .x$date2[1], '.pdf'),
+       filename = paste(dir, .x$date2[1], '.pdf'),
        width = 8, height = 8)
   .x[.x$in_situ_flow == F, ]$flow_m3s_log10 <- predict(reg, .x[.x$in_situ_flow == F,])
   .x[.x$in_situ_flow == F, ]$flow_m3s <- 10**.x[.x$in_situ_flow == F,]$flow_m3s_log10
@@ -1237,14 +1259,27 @@ landsat_flux$date2 <- landsat_flux$date
 
 landsat_flux <- landsat_flux %>%
   group_by(date) %>%
-  group_modify(~naive_reg(.)) %>% 
+  group_modify(~naive_reg(., wd_landsat_Q)) %>% 
   subset(select=-c(date2))
 # %>% 
 #   filter(flow_m3s_predict>=0)
 
+# Add dummy date to access date inside of group modify
+sentinel_flux$date2 <- sentinel_flux$date
+
+sentinel_flux <- sentinel_flux %>%
+  group_by(date) %>%
+  group_modify(~naive_reg(., wd_sentinel_Q)) %>% 
+  subset(select=-c(date2))
+# %>% 
+#   filter(flow_m3s_predict>=0)
+
+sentinel_flux <- sentinel_flux %>% filter(SSC_mgL >0)
+
 ggplot(landsat_flux, aes(x=distance_km, y=flow_m3s)) +
   # geom_point() + 
-  stat_summary(fun='mean', geom="line", aes(color="regressed")) +
+  stat_summary(fun='mean', geom="line", aes(color="Landsat")) +
+  stat_summary(data = sentinel_flux, fun='mean', geom="line", aes(color="Sentinel")) +
   stat_summary(data = Q_full_mc, fun='mean', geom="line", aes(color="in-situ")) +
   season_facet +
   # coord_cartesian(ylim=c(0,750)) +
@@ -1257,6 +1292,7 @@ ggplot(landsat_flux, aes(x=distance_km, y=flow_m3s)) +
 ```{r}
 # Determine flux at every point
 landsat_flux$SSC_flux_MTyr <- landsat_flux$flow_m3s * landsat_flux$SSC_mgL * 3.10585 * 10**-5
+sentinel_flux$SSC_flux_MTyr <- sentinel_flux$flow_m3s * sentinel_flux$SSC_mgL * 3.10585 * 10**-5
 
 # Reduce and get average for one sample per day
 landsat_day_avg <- landsat_flux %>% group_by(distance_km, date) %>% 
@@ -1265,80 +1301,105 @@ landsat_day_avg <- landsat_flux %>% group_by(distance_km, date) %>%
                    select=-c(SSC_flux_MTyr, flow_m3s, SSC_mgL)), by=c("date", "distance_km")) %>%
   distinct()
 
+# Reduce and get average for one sample per day
+sentinel_day_avg <- sentinel_flux %>% group_by(distance_km, date) %>% 
+  summarise_at(c("SSC_flux_MTyr","flow_m3s","SSC_mgL"), mean) %>%
+  left_join(subset(sentinel_flux, 
+                   select=-c(SSC_flux_MTyr, flow_m3s, SSC_mgL)), by=c("date", "distance_km")) %>%
+  distinct()
+# Add year chunk to day avg
+sentinel_day_avg$year_chunk <- cut(as.numeric(sentinel_day_avg$year), seq(from = 1985, to = 2026, by = 5), right=FALSE)
+
 transect_flux_plot <- ggplot(landsat_day_avg, 
-                             aes(x=distance_km, y=SSC_flux_MTyr, color="Landsat Derived\nSSC Flux (MT/yr)")) +
+                             aes(x=distance_km, y=SSC_flux_MTyr, 
+                                 color="Landsat Derived\nSSC Flux (MT/yr)")) +
   # geom_point() +
-  stat_summary(geom = 'line', fun = 'mean', group=1, aes(color="Average SSC Flux (MT/yr)"), na.rm=T) +
+  stat_summary(geom = 'line', fun = 'mean', group=1, 
+               aes(color="Average Landsat SSC Flux (MT/yr)"), na.rm=T) +
+  stat_summary(data = sentinel_day_avg, geom = 'line', fun = 'mean', group=1, 
+               aes(color="Average Sentinel SSC Flux (MT/yr)"), na.rm=T) +
   # stat_summary(geom = 'errorbar', aes(color='1 standard Error'), fun.data= mean_se,
   #              fun.args = list(mult = 1), # mult = # of standard errors
   #              size = 0.5,
   #              width =  0.2,
   #              show.legend=TRUE) +
   # coord_cartesian(ylim=c(0,2)) +
-  scale_color_manual(values = c("green")) +
-  season_facet +
+  scale_color_manual(values = c('#999999','#E69F00')) +
+  theme_minimal() +
   facet_wrap(~year_chunk) +
+  theme(legend.position = "bottom") +
   labs(title="SSC Flux along the Chattahoochee Transect",
        caption="Reduced to one average sample per day per transect section.")
 
 transect_flux_plot
 
 transect_flow_plot <- ggplot(landsat_day_avg, 
-                             aes(x=distance_km, y=flow_m3s, color="Flow_m3s")) +
+                             aes(x=distance_km, y=flow_m3s, color=" Average Landsat Q")) +
   # geom_point() +
   stat_summary(geom = 'line', fun = 'mean', group=1, na.rm=T) +
-  scale_color_manual(values = c("red")) +
-  season_facet +
+  stat_summary(data=sentinel_day_avg, aes(color="Average Sentinel Q",), geom = 'line', fun = 'mean', group=1, na.rm=T) +
+  scale_color_manual(values = c('#999999','#E69F00')) +
+  theme_minimal() +
   facet_wrap(~year_chunk) +
-  labs(title="Discharge along the Chattahoochee Transect",
+  theme(legend.position = "bottom") +
+  labs(title="Discharge along the Chattahoochee Transect (m3/s)",
        caption="Reduced to one average sample per day per transect section.")
 
 transect_flow_plot
 
-# USGS Station is roughly 10 km upstream, add 2 km buffer
-landsat_mouth <- landsat_day_avg %>% 
-  filter(distance_km<=max(landsat_day_avg$distance_km)-8 & distance_km>=max(landsat_day_avg$distance_km)-12)
+# Take last 10 km of river
+landsat_mouth <- landsat_day_avg %>% filter(distance_km >= (max(landsat_day_avg$distance_km)-10))
+# %>%filter(distance_km<=max(landsat_day_avg$distance_km)-8 & distance_km>=max(landsat_day_avg$distance_km)-12)
+sentinel_mouth <- sentinel_day_avg %>% filter(distance_km >= (max(sentinel_day_avg$distance_km)-10))
 
-landsat_flux_mouth_plot <- ggplot(landsat_mouth, aes(x=year_chunk, y=SSC_flux_MTyr, color="Landsat Derived\nSSC Flux (MT/yr)")) +
+flux_mouth_plot <- ggplot(landsat_mouth, aes(x=year_chunk, y=SSC_flux_MTyr, color="Landsat Derived\nSSC Flux (MT/yr)")) +
   # geom_point() +
-  stat_summary(geom = 'line', fun = 'mean', group=1, aes(color="Landsat Derived\nSSC Flux (MT/yr)")) +
-  stat_summary(geom = 'errorbar', aes(color='1 standard Error'), fun.data= mean_se,
-               fun.args = list(mult = 1), # mult = # of standard errors
-               size = 0.5,
-               width =  0.2,
-               show.legend=TRUE) +
+  stat_summary(geom = 'line', fun = 'mean', group=1, 
+               aes(color="Landsat Derived\nSSC Flux (MT/yr)")) +
+  stat_summary(data=sentinel_mouth, geom = 'line', fun = 'mean', group=1, 
+               aes(color="Sentinel Derived\nSSC Flux (MT/yr)")) +
+  # stat_summary(geom = 'errorbar', aes(color='1 standard Error'), fun.data= mean_se,
+  #              fun.args = list(mult = 1), # mult = # of standard errors
+  #              size = 0.5,
+  #              width =  0.2,
+  #              show.legend=TRUE) +
   # coord_cartesian(ylim=c(0,2)) +
-  scale_color_manual(values = c("green", "purple")) +
-  season_facet +
+  scale_color_manual(values = c('#999999','#E69F00')) +
+  theme_minimal()+
+  theme(legend.position = "bottom") +
   labs(title="SSC Flux at the mouth of the chattahoochee",
        caption="Reduced to one average sample per day.")
 
-landsat_flux_mouth_plot
+flux_mouth_plot
 
 # Combine with no rating curve in-situ measurements
 mouth_flux_compare <- ggplot(landsat_mouth, aes(x=year_chunk, y=SSC_flux_MTyr)) +
   # geom_point() +
-  stat_summary(geom = 'line', fun = 'mean', group=1, aes(color="Landsat Derived\nSSC Flux (MT/yr)")) +
-  stat_summary(geom = 'errorbar', 
-               aes(color='1 standard deviation'), 
-               fun.data= mean_sdl,
-               fun.args = list(mult = 1), # mult = # of standard errors
-               size = 0.5,
-               width =  0.2,
-               show.legend=TRUE) +
+  stat_summary(geom = 'line', fun = 'mean', group=1, 
+               aes(color="Landsat Derived\nSSC Flux (MT/yr)")) +
+  stat_summary(data = sentinel_mouth, geom = 'line', fun = 'mean', group=1, 
+               aes(color="Sentinel Derived\nSSC Flux (MT/yr)")) +
+  # stat_summary(geom = 'errorbar', 
+  #              aes(color='1 standard deviation'), 
+  #              fun.data= mean_sdl,
+  #              fun.args = list(mult = 1), # mult = # of standard errors
+  #              size = 0.5,
+  #              width =  0.2,
+  #              show.legend=TRUE) +
   # geom_point() +
   stat_summary(data=ssc_day_avg, geom = 'line', fun = 'mean', group=1, aes(x=year_chunk, y=SSC_flux_MTyr, color="In-Situ SSC Flux (MT/yr)")) +
-  stat_summary(data=ssc_day_avg, 
-               geom = 'errorbar', 
-               aes(x=year_chunk, y=SSC_flux_MTyr, color='1 standard deviation'), 
-               fun.data= mean_sdl,
-               fun.args = list(mult = 1), # mult = # of standard errors
-               size = 0.5,
-               width =  0.2,
-               show.legend=TRUE) +
-  season_facet +
+  # stat_summary(data=ssc_day_avg, 
+  #              geom = 'errorbar', 
+  #              aes(x=year_chunk, y=SSC_flux_MTyr, color='1 standard deviation'), 
+  #              fun.data= mean_sdl,
+  #              fun.args = list(mult = 1), # mult = # of standard errors
+  #              size = 0.5,
+  #              width =  0.2,
+  #              show.legend=TRUE) +
+  theme_minimal()+
+  theme(legend.position = "bottom") +
   coord_cartesian(ylim=c(0, 5)) +
-  scale_color_manual(values = c("green", "purple","red")) +
+  scale_color_manual(values = c('#9CDB79', '#999999','#E69F00')) +
   labs(title="SSC Flux at the mouth of the chattahoochee",
        caption="Reduced to one average sample per day.",
        x="year")
@@ -1354,23 +1415,43 @@ ggsave(transect_flow_plot,
        filename = paste0(wd_root, '/exports/transect_flow.png'),
        width = 12, height = 8)
 
-ggsave(landsat_flux_mouth_plot, 
-       filename = paste0(wd_root, '/exports/landsat_mouth_flux.png'),
+ggsave(flux_mouth_plot, 
+       filename = paste0(wd_root, '/exports/lmouth_flux.png'),
        width = 12, height = 8)
 
 ggsave(mouth_flux_compare , 
        filename = paste0(wd_root, '/exports/mouth_flux_compare_year_chunk.png'),
        width = 20, height = 8)
 ```
+
 # Save variables
+
 ```{r}
-save(Q_full_mc, file=paste0(save_dir, "Q_full_mc.RData"))
-save(landsat_data_filter, file=paste0(save_dir, "landsat_data_filter.RData"))
-save(landsat_flux, file=paste0(save_dir, "landsat_flux.RData"))
-save(landsat_day_avg, file=paste0(save_dir, "landsat_day_avg.RData"))
-save(landsat_mouth, file=paste0(save_dir, "landsat_mouth.RData"))
-save(ssc_day_avg, file=paste0(save_dir, "ssc_day_avg.RData"))
-save(ssc_q, file=paste0(save_dir, "ssc_q.RData"))
+# save(Q_full_mc, file=paste0(save_dir, "Q_full_mc.RData"))
+# save(landsat_data_filter, file=paste0(save_dir, "landsat_data_filter.RData"))
+# save(landsat_flux, file=paste0(save_dir, "landsat_flux.RData"))
+# save(landsat_day_avg, file=paste0(save_dir, "landsat_day_avg.RData"))
+# save(landsat_mouth, file=paste0(save_dir, "landsat_mouth.RData"))
+# save(sentinel_data, file=paste0(save_dir, "sentinel_data.RData"))
+# save(sentinel_flux, file=paste0(save_dir, "sentinel_flux.RData"))
+# save(sentinel_day_avg, file=paste0(save_dir, "sentinel_day_avg.RData"))
+# save(sentinel_mouth, file=paste0(save_dir, "sentinel_mouth.RData"))
+# save(ssc_day_avg, file=paste0(save_dir, "ssc_day_avg.RData"))
+# save(ssc_q, file=paste0(save_dir, "ssc_q.RData"))
+# 
+
+load(file=paste0(save_dir, "Q_full_mc.RData"))
+load(file=paste0(save_dir, "landsat_data_filter.RData"))
+load(file=paste0(save_dir, "landsat_flux.RData"))
+load(file=paste0(save_dir, "landsat_day_avg.RData"))
+load(file=paste0(save_dir, "landsat_mouth.RData"))
+load(file=paste0(save_dir, "sentinel_data.RData"))
+load(file=paste0(save_dir, "sentinel_flux.RData"))
+load(file=paste0(save_dir, "sentinel_day_avg.RData"))
+load(file=paste0(save_dir, "sentinel_mouth.RData"))
+load(file=paste0(save_dir, "ssc_day_avg.RData"))
+load(file=paste0(save_dir, "ssc_q.RData"))
+load(file=paste0(save_dir, "mouth_q.RData"))
 ```
 
 # Investigate some stats using continuous discharge
@@ -1412,24 +1493,172 @@ ggplot(ssc_day_avg, aes(x=year_chunk, y=SSC_flux_MTyr)) +
   scale_fill_brewer(palette="Blues") + theme_classic()
 
 # Side by side box plot
-ggplot(ssc_day_avg, aes(x=year_chunk, y=SSC_flux_MTyr, color="In-Situ")) +
+mouth_boxplots <- ggplot(ssc_day_avg, aes(x=year_chunk, y=SSC_flux_MTyr, color="In-Situ")) +
   # coord_cartesian(ylim=c(0,3)) +
-  coord_cartesian(ylim = as.numeric(ylims_ssc)*1.05) +
+  coord_cartesian(ylim = as.numeric(ylims_ssc)*1.10) +
   # geom_violin(scale="count", aes(fill = year_chunk)) +
   geom_boxplot(width=0.2, outlier.shape=NA, position= position_nudge(x=-.13)) +
-  geom_boxplot(data=landsat_mouth, aes(color="Landsat"), width=0.2, outlier.shape=NA, position= position_nudge(x=+.13)) +
+  geom_boxplot(data=landsat_mouth, aes(color="Landsat"), width=0.2, outlier.shape=NA, 
+               position= position_nudge(x=+.13)) +
+  geom_boxplot(data=sentinel_mouth, aes(color="Sentinel"), width=0.2, outlier.shape=NA, 
+               position= position_nudge(x=+.39)) +
   # Add labels for amount of observations
   # geom_text(data = landsat_flux, aes(label=count), 
   #           position=position_dodge(width=1.0)) +
-  scale_fill_brewer(palette="Blues") + theme_classic() +
-  labs(title="")
+  scale_color_manual(values = c('#9CDB79', '#999999','#E69F00')) +
+  labs(title="Comparison of Flux at the Mouth of the Chattahoochee",
+       caption="USGS samples are taken at site USGS-02359170, APALACHICOLA RIVER NR SUMATRA,FLA.\nFor Landsat/Sentinel, the mouth of the river is defined as the last 10km of river.")
+
+mouth_boxplots
+
+ggsave(mouth_boxplots, 
+       filename = paste0(wd_root, '/exports/mouth_flux_boxplots.png'),
+       width = 20, height = 8)
 
 ```
 
-# Initalize data for time series comparison
+# Investigate Creating a Rating Curve
+```{r}
+# log10 flux vs log10 discharge
+
+
+### Using landsat data <- landsat_mouth ###
+landsat_mouth$SSC_flux_MTyr_log10 <- log10(landsat_mouth$SSC_flux_MTyr)
+fluxFlow_landsat <- lm(SSC_flux_MTyr_log10~flow_m3s_log10, data=landsat_mouth)
+
+fluxFlow_landsat_eq <- substitute(italic('SSC Flux (Mt/yr)') == 
+                                    10^a %.%italic('Discharge (m^3/s)')^b~italic('R'^2)~':'~r2, 
+       list(a = format(unname(coef(fluxFlow_landsat)[1]), digits = 3),
+            b = format(unname(coef(fluxFlow_landsat)[2]), digits = 3),
+            r2 = format(summary(fluxFlow_landsat)$r.squared, digits = 4)))
+
+### Using Sentinel data <- sentinel_mouth ###
+sentinel_mouth$SSC_flux_MTyr_log10 <- log10(sentinel_mouth$SSC_flux_MTyr)
+fluxFlow_sentinel<- lm(SSC_flux_MTyr_log10~flow_m3s_log10, data=sentinel_mouth)
+
+fluxFlow_sentinel_eq <- substitute(italic('SSC Flux (Mt/yr)') == 
+                                    10^a %.%italic('Discharge (m^3/s)')^b~italic('R'^2)~':'~r2, 
+       list(a = format(unname(coef(fluxFlow_sentinel)[1]), digits = 3),
+            b = format(unname(coef(fluxFlow_sentinel)[2]), digits = 3),
+            r2 = format(summary(fluxFlow_sentinel)$r.squared, digits = 4)))
+
+### Using USGS data <- ssc_day_avg ###
+# Add duplicate columns for ease of use
+ssc_day_avg$SSC_flux_MTyr_log10 <- ssc_day_avg$log10_SSC_flux_MTyr
+ssc_day_avg$flow_m3s_log10 <- ssc_day_avg$log10_discharge_m3s
+fluxFlow_USGS<- lm(SSC_flux_MTyr_log10~flow_m3s_log10, data=ssc_day_avg)
+
+fluxFlow_USGS_eq <- substitute(italic('SSC Flux (Mt/yr)') == 
+                                    10^a %.%italic('Discharge (m^3/s)')^b~italic('R'^2)~':'~r2, 
+       list(a = format(unname(coef(fluxFlow_USGS)[1]), digits = 3),
+            b = format(unname(coef(fluxFlow_USGS)[2]), digits = 3),
+            r2 = format(summary(fluxFlow_USGS)$r.squared, digits = 4)))
+
+### Display Rating Curve Plots ###
+ggplot(landsat_mouth, aes(x=flow_m3s_log10, y=SSC_flux_MTyr_log10)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=FALSE, color="green", formula = y ~ x) +
+  annotate(geom='text', label = as.character(as.expression(fluxFlow_landsat_eq)), 
+           parse = T, x = -Inf, y = Inf, hjust = 0, vjust = 1) +
+  theme_minimal()+
+  labs(title=paste0('Landsat Derived Flux-Discharge Rating Curve'),
+      x='Sediment Flux (log10 Mt/yr)',
+      y='Discharge (log10 m3s)')
+
+ggplot(sentinel_mouth, aes(x=flow_m3s_log10, y=SSC_flux_MTyr_log10)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=FALSE, color="green", formula = y ~ x) +
+  annotate(geom='text', label = as.character(as.expression(fluxFlow_sentinel_eq)), 
+           parse = T, x = -Inf, y = Inf, hjust = 0, vjust = 1) +
+  theme_minimal()+
+  labs(title=paste0('Sentinel Derived Flux-Discharge Rating Curve'),
+      x='Sediment Flux (log10 Mt/yr)',
+      y='Discharge (log10 m3s)')
+
+ggplot(ssc_day_avg, aes(x=flow_m3s_log10, y=SSC_flux_MTyr_log10)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=FALSE, color="green", formula = y ~ x) +
+  annotate(geom='text', label = as.character(as.expression(fluxFlow_USGS_eq)), 
+           parse = T, x = -Inf, y = Inf, hjust = 0, vjust = 1) +
+  theme_minimal()+
+  labs(title=paste0('USGS Derived Flux-Discharge Rating Curve'),
+      x='Sediment Flux (log10 Mt/yr)',
+      y='Discharge (log10 m3s)')
+
+### Apply rating curves to discharge data at mouth of river -> mouth_q ###
+mouth_q$rating_flux_landsat <- 10**predict(fluxFlow_landsat, mouth_q)
+mouth_q$rating_flux_sentinel <- 10**predict(fluxFlow_sentinel, mouth_q)
+#sentinel clip <- only to valid time chunk where sentinel data exists
+# mouth_q$rating_flux_sentinelClip <- -100000 # need column to be numeric
+# mouth_q[mouth_q$year_chunk == unique(sentinel_mouth$year_chunk),]$rating_flux_sentinelClip <- 10**predict(fluxFlow_sentinel, mouth_q[mouth_q$year_chunk == unique(sentinel_mouth$year_chunk),])
+# mouth_q[mouth_q$rating_flux_sentinelClip == -100000, ]$rating_flux_sentinelClip <- NA # filter our Null data
+mouth_q$rating_flux_USGS<- 10**predict(fluxFlow_USGS, mouth_q)
+
+# Boxplot of using reverse rating curve
+
+ylims_flux <- mouth_q %>%
+  group_by(year_chunk) %>%
+  summarise(Q1 = quantile(rating_flux_landsat, 1/4, na.rm=T), Q3 = quantile(rating_flux_landsat, 3/4, na.rm=T)) %>%
+  ungroup() %>%
+  #get lowest Q1 and highest Q3
+  summarise(lowQ1 = min(Q1), highQ3 = max(Q3))
+
+ggplot(mouth_q, aes(x=year_chunk, y=rating_flux_USGS, color="USGS")) +
+  # coord_cartesian(ylim=c(0,3)) +
+  coord_cartesian(ylim = c(0, as.numeric(ylims_flux[2])*1.10)) +
+  # geom_violin(scale="count", aes(fill = year_chunk)) +
+  geom_boxplot(width=0.2, outlier.shape=NA, position= position_nudge(x=-.13)) +
+  geom_boxplot(aes(y=rating_flux_landsat, color="Landsat"), width=0.2, outlier.shape=NA, 
+               position= position_nudge(x=+.13)) +
+  geom_boxplot(aes(y=rating_flux_sentinel, color="Sentinel"), width=0.2, outlier.shape=NA, 
+               position= position_nudge(x=+.39)) +
+  # Add labels for amount of observations
+  # geom_text(data = landsat_flux, aes(label=count), 
+  #           position=position_dodge(width=1.0)) +
+  scale_color_manual(values = c('#9CDB79', '#999999','#E69F00')) +
+  theme_minimal()+
+  labs(title="FILL",
+       caption="USGS samples are taken at site USGS-02359170, APALACHICOLA RIVER NR SUMATRA,FLA.\nFor Landsat/Sentinel, the mouth of the river is defined as the last 10km of river.",
+       y="Sediment FLux (Mt/yr)",
+       x="Year Grouping")
+
+### Compare to No rating Curve Data ###
+ggplot(landsat_mouth, aes(x=year_chunk, y=SSC_flux_MTyr, color="Landsat Derived\nSSC Flux (MT/yr)")) +
+  # geom_point() +
+  coord_cartesian(ylim=c(0,3)) +
+  stat_summary(geom = 'line', fun = 'mean', group=1, 
+               aes(color="Landsat")) +
+  # Add number of observations from landsat
+  geom_label(aes(label=..count.., size=..count..), y=2.75,stat='count', color='red') +
+  # stat_summary(fun= 'count', geom='text') +
+
+  stat_summary(data=sentinel_mouth, geom = 'line', fun = 'mean', group=1, 
+               aes(color="Sentinel-2")) +
+    
+  stat_summary(data = mouth_q, geom = 'line', fun = 'mean', group=1, 
+               aes(y=rating_flux_landsat, color="Landsat\n(Rating Curve Derived)")) +
+    
+  stat_summary(data=mouth_q[mouth_q$year_chunk == unique(sentinel_mouth$year_chunk),], geom = 'line', fun = 'mean', group=1, 
+               aes(y=rating_flux_sentinel, color="Sentinel-2\n(Rating Curve Derived)")) +
+  
+  stat_summary(data=mouth_q, geom = 'line', fun = 'mean', group=1, 
+               aes(y=rating_flux_USGS, color="USGS\n(Rating Curve Derived)")) +
+  
+  scale_color_manual(values = c('#999999','#E69F00','blue','green','purple')) +
+  geom_label(data=mouth_q[mouth_q$year_chunk == unique(sentinel_mouth$year_chunk),],
+            aes(label=..count.., size=..count..), y=2.75-.3, stat='count', color='black') +
+  theme_minimal()+
+  guides(size = 'none') +
+  theme(legend.position ="bottom") +
+  labs(title="SSC Flux at the mouth of the chattahoochee",
+       caption="Reduced to one average sample per day.",
+       y="Sediment Flux (Mt/yr)",
+       x="Year Grouping")
+
+```
+# Initalize data for time series comparison --> TESTING USING RATING CURVE DERIVED DATA
 
 ```{r}
-
 basin_area <- st_area(riverdata$basin) %>% set_units(km^2)
 
 ### PRE-ANTHROPOGENIC ###
@@ -1439,9 +1668,9 @@ basin_area <- st_area(riverdata$basin) %>% set_units(km^2)
 Be10E <- 9.15 %>% set_units(mm/kyr) %>% set_units(m/yr)
 Be10dE <- 2.15 %>% set_units(mm/kyr) %>% set_units(m/yr)
 
-# Get total flux over one year (using density of quartz, 2.648 g/cm^3)
-Be10flux <- (Be10E * set_units(basin_area, m^2) * set_units(2648, kg/m^3)) %>% set_units(Mt/yr)
-Be10dflux <- (Be10dE * set_units(basin_area, m^2) * set_units(2648, kg/m^3)) %>% set_units(Mt/yr)
+# Get total flux over one year (using density of quartz, 2.648 g/cm^3) --> switched to 1440 from Trimble 1977
+Be10flux <- (Be10E * set_units(basin_area, m^2) * set_units(1440, kg/m^3)) %>% set_units(Mt/yr)
+Be10dflux <- (Be10dE * set_units(basin_area, m^2) * set_units(1440, kg/m^3)) %>% set_units(Mt/yr)
 
 ### PRE-DAM ###
 
@@ -1455,41 +1684,225 @@ Tflux <- ((set_units(0.057, mm/yr) %>% set_units(m/yr))
 ### POST-DAM ###
 
 #USGS in-situ data (at station closest to mouth - USGS-02359170)
-USGSflux <- mean(ssc_day_avg$SSC_flux_MTyr) %>% set_units(Mt/yr)
-USGSdflux <- sd(ssc_day_avg$SSC_flux_MTyr) %>% set_units(Mt/yr)
+# Increase by 10% to account for bed load
+USGSflux <- mean(ssc_day_avg$SSC_flux_MTyr * 1.1) %>% set_units(Mt/yr)
+USGSdflux <- sd(ssc_day_avg$SSC_flux_MTyr * 1.1) %>% set_units(Mt/yr)
 USGSQ <- mean(ssc_day_avg$flow_m3s) %>% set_units(m^3/s)
 USGSdQ <- sd(ssc_day_avg$flow_m3s) %>% set_units(m^3/s)
 USGSDisYield <- (USGSflux / basin_area) %>% set_units(t/(km^2*yr))
 USGSSSC <- mean(ssc_day_avg$sscmg_L) %>% set_units(mg/L)
 USGSdSSC <- sd(ssc_day_avg$sscmg_L) %>% set_units(mg/L)
+USGSsamp <- nrow(ssc_day_avg)
 
 # Landsat Data (use last 10 km of the river)
-Landsatflux <- mean(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$SSC_flux_MTyr, na.rm=T) %>% set_units(Mt/yr)
-Landsatdflux <- sd(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$SSC_flux_MTyr, na.rm=T) %>% set_units(Mt/yr)
-LandsatQ <- mean(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$flow_m3s, na.rm=T) %>% set_units(m^3/s)
-LandsatQ <- sd(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$flow_m3s, na.rm=T) %>% set_units(m^3/s)
-LandsatSSC <- mean(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$SSC_mgL, na.rm=T) %>% set_units(mg/L)
-LandsatdSSC <- mean(landsat_day_avg[landsat_day_avg$distance_km>=(max(landsat_day_avg$distance_km)-10),]$SSC_mgL, na.rm=T) %>% set_units(mg/L)
+# Increase by 10% to account for bed load
+# Landsatflux <- mean(landsat_mouth$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+# Landsatdflux <- sd(landsat_mouth$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+# LandsatQ <- mean(landsat_mouth$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+# LandsatdQ <- sd(landsat_mouth$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+LandsatSSC <- mean(landsat_mouth$SSC_mgL, na.rm=T) %>% set_units(mg/L)
+LandsatdSSC <- mean(landsat_mouth$SSC_mgL, na.rm=T) %>% set_units(mg/L)
+Landsatsamp <- nrow(landsat_mouth)
+
+Landsatflux <- mean(mouth_q$rating_flux_landsat * 1.1, na.rm=T) %>% set_units(Mt/yr)
+Landsatdflux <- sd(mouth_q$rating_flux_landsat * 1.1, na.rm=T) %>% set_units(Mt/yr)
+LandsatQ <- mean(mouth_q$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+LandsatdQ <- sd(mouth_q$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+
+
+# Sentinel Data (use last 10 km of the river)
+# Increase by 10% to account for bed load
+# Sentinelflux <- mean(sentinel_mouth$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+# Sentineldflux <- sd(sentinel_mouth$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+# SentinelQ <- mean(sentinel_mouth$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+# SentineldQ <- sd(sentinel_mouth$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+SentinelSSC <- mean(sentinel_mouth$SSC_mgL, na.rm=T) %>% set_units(mg/L)
+SentineldSSC <- mean(sentinel_mouth$SSC_mgL, na.rm=T) %>% set_units(mg/L)
+Sentinelsamp <- nrow(sentinel_mouth)
+
+Sentinelflux <- mean(mouth_q[mouth_q$year_chunk == unique(sentinel_mouth$year_chunk),]$rating_flux_sentinel * 1.1, na.rm=T) %>% set_units(Mt/yr)
+Sentineldflux <- sd(mouth_q[mouth_q$year_chunk == unique(sentinel_mouth$year_chunk),]$rating_flux_sentinel * 1.1, na.rm=T) %>% set_units(Mt/yr)
+SentinelQ <- mean(mouth_q$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+SentineldQ <- sd(mouth_q$flow_m3s, na.rm=T) %>% set_units(m^3/s)
+
+
 
 # Data from Milliman et. al
+# Increase by 10% to account for bed load
 MillimanQ <- (set_units(22, km^3/yr)) %>% set_units(m^3/s) # Average discharge
-MillimanTDS <- set_units(1.1, Mt/yr) # TDS load
+MillimanTDS <- set_units(1.1 * 1.1, Mt/yr) # TDS load
 MillimanDisYield <- set_units(0.021*1000, t/(km^2*yr)) # They use basin area of 52,000 km^2 but use 52 as divisor, need to multiply by 1,000
 MillimanSSC <- set_units(50, mg/L) # Average SSC concentration
 
 # Flux Dataframe
-Timeflux <- data.frame(source=c("Reusser (2015)", "Trimble (1977)", "USGS", "Milliman (2013)", "Dethier (2020)"),
-                       flux=c(Be10flux, Tflux, USGSflux, MillimanTDS, Landsatflux),
-                       period=c("Pre-Antropogenic", "Pre-Dam", "Post-Dam", "Post-Dam", "Post-Dam"))
+Timeflux <- data.frame(source=c("Reusser (2015)", "Trimble (1977)", "USGS*", "Milliman (2013)*", "Dethier (2020)*","Sentinel-2**"),
+                       flux=c(Be10flux, Tflux, USGSflux, MillimanTDS, Landsatflux, Sentinelflux),
+                       period=c("Pre-Antropogenic", "Pre-Dam", "Post-Dam", "Post-Dam", "Post-Dam","Post-Dam"))
 Timeflux$period <- factor(Timeflux$period, levels = c("Pre-Antropogenic", "Pre-Dam", "Post-Dam"))
 Timeflux$source <- factor(Timeflux$source, levels = Timeflux$source)
+
+# Sampling dataframe
+Samples <- data.frame(source = c("USGS", "Landsat","Sentinel-2"),
+                      samples = c(USGSsamp, Landsatsamp, Sentinelsamp))
+
+# Q dataframe
+Qs <- data.frame(source = c("USGS", "Landsat","Sentinel-2", "Milliman"),
+                      q = c(USGSQ, LandsatQ, SentinelQ,MillimanQ))
 ```
 
 # Create plots over time periods
 ```{r}
 # Compare flux over three time periods
-ggplot(Timeflux, aes(x=source, y=flux, fill=period)) +
+time_compare <- ggplot(Timeflux, aes(x=source, y=flux, fill=period)) +
   geom_bar(stat="identity", color="black") +
+  geom_text(aes(label=sprintf("%0.2f", round(flux, digits = 2))), vjust=-0.2) +
   theme_minimal() +
-  scale_fill_manual(values=c('#999999','#E69F00','#9CDB79'))
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values=c('#999999','#E69F00','#9CDB79')) +
+  labs(title="Sediment Flux in the Chattahoochee Basin",
+       x = "",
+       caption = "Using bulk density of 1440 kg/m^3 from Trimble (1977) and assuming bed load accounts for an extra 10% across SSC derived flux.\n*Defined as 1985-present.\n**Data only available from 2018-2022.")
+
+time_compare 
+
+# Compare number of samples
+samp_compare <- ggplot(Samples, aes(x=source, y=samples, fill=source)) +
+  geom_bar(stat="identity", color="black") +
+  geom_text(aes(label=samples), vjust=-0.2) +
+  theme_minimal() +
+  scale_fill_manual(values=c('#999999','#E69F00','#9CDB79')) +
+  labs(title="Number of Samples (1985-2023)",
+       x = "",
+       caption = "Samples are taken at site USGS-02359170, APALACHICOLA RIVER NR SUMATRA,FLA.\nFor Landsat/Sentinel, the mouth of the river is defined as the last 10km of river.")
+
+samp_compare
+
+Q_compare <- ggplot(Qs, aes(x=source, y=q, fill=source)) +
+  geom_bar(stat="identity", color="black") +
+  geom_text(aes(label=sprintf("%0.0f", round(q, digits = 0))), vjust=-0.2) +
+  theme_minimal() +
+  scale_fill_manual(values=c('#999999','#9CDB79','#E69F00',"blue")) +
+  labs(title="Average Discharge at the Mouth of the Chattahoochee",
+       x = "",
+       caption = "Samples are taken at site USGS-02359170, APALACHICOLA RIVER NR SUMATRA,FLA.\nFor Landsat/Sentinel, the mouth of the river is defined as the last 10km of river.")
+
+Q_compare
+
+# Save plots
+ggsave(time_compare, 
+       filename = paste0(wd_root, '/exports/time_compare.png'),
+       width = 20, height = 8)
+ggsave(samp_compare, 
+       filename = paste0(wd_root, '/exports/samp_compare.png'),
+       width = 20, height = 8)
+ggsave(Q_compare, 
+       filename = paste0(wd_root, '/exports/Q_compare.png'),
+       width = 20, height = 8)
+```
+
+# Investigate large storms
+```{r}
+### LANDSAT ###
+
+landsatQ_top <- landsat_mouth %>%
+  # group_by(year_chunk) %>%
+  summarise(top = quantile(flow_m3s, 0.95, na.rm=T)) %>%
+  # ungroup() %>%
+  # highest Q3
+  summarise(high = max(top))
+
+landsat_mouth_qB <- landsat_mouth %>% filter(flow_m3s < landsatQ_top$high)
+landsat_mouth_qT <- landsat_mouth %>% filter(flow_m3s >= landsatQ_top$high)
+
+# Assume 10% bedload
+landsat_qB_fluxraw <- sum(landsat_mouth_qB$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+landsat_qT_fluxraw <- sum(landsat_mouth_qT$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+
+# Normalize 
+landsat_qB_flux <- landsat_qB_fluxraw/(landsat_qB_fluxraw+landsat_qT_fluxraw)
+landsat_qT_flux <- landsat_qT_fluxraw/(landsat_qB_fluxraw+landsat_qT_fluxraw)
+
+# Get number of samples
+landsat_qB_days <- nrow(landsat_mouth_qB)
+landsat_qT_days <- nrow(landsat_mouth_qT)
+
+### SENTINEL ###
+
+SQ_top <- sentinel_mouth %>%
+  # group_by(year_chunk) %>%
+  summarise(top = quantile(flow_m3s, 0.95, na.rm=T)) %>%
+  # ungroup() %>%
+  # highest Q3
+  summarise(high = max(top))
+
+# Assume 10% bedload
+S_mouth_qB <- sentinel_mouth %>% filter(flow_m3s < SQ_top$high)
+S_mouth_qT <- sentinel_mouth %>% filter(flow_m3s >= SQ_top$high)
+
+# Assume 10% bedload
+S_qB_fluxraw <- sum(S_mouth_qB$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+S_qT_fluxraw <- sum(S_mouth_qT$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+
+# Normalize 
+S_qB_flux <- S_qB_fluxraw/(S_qB_fluxraw+S_qT_fluxraw)
+S_qT_flux <- S_qT_fluxraw/(S_qB_fluxraw+S_qT_fluxraw)
+
+# Get number of samples
+S_qB_days <- nrow(S_mouth_qB)
+S_qT_days <- nrow(S_mouth_qT)
+
+### USGS ###
+USGSQ_top <- ssc_day_avg %>%
+  # group_by(year_chunk) %>%
+  summarise(top = quantile(flow_m3s, 0.95, na.rm=T)) %>%
+  # ungroup() %>%
+  # highest Q3
+  summarise(high = max(top))
+
+USGS_mouth_qB <- ssc_day_avg %>% filter(flow_m3s < USGSQ_top$high)
+USGS_mouth_qT <- ssc_day_avg %>% filter(flow_m3s >= USGSQ_top$high)
+
+# Assume 10% bedload
+USGS_qB_fluxraw <- sum(USGS_mouth_qB$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+USGS_qT_fluxraw <- sum(USGS_mouth_qT$SSC_flux_MTyr * 1.1, na.rm=T) %>% set_units(Mt/yr)
+
+# Normalize 
+USGS_qB_flux <- USGS_qB_fluxraw/(USGS_qB_fluxraw+USGS_qT_fluxraw)
+USGS_qT_flux <- USGS_qT_fluxraw/(USGS_qB_fluxraw+USGS_qT_fluxraw)
+
+# Get number of samples
+USGS_qB_days <- nrow(USGS_mouth_qB)
+USGS_qT_days <- nrow(USGS_mouth_qT)
+
+### MAKE PLOTS ###
+
+# Quartile dataset
+storm_quartiles <- data.frame(flow=c("Landsat Bottom 95%", "Landsat Top 5%", 
+                                     "Sentinel Bottom 95%", "Sentinel Top 5%",
+                                     "USGS Bottom 95%", "USGS Top 5%"),
+                              # Flux is proportion of flux
+                              flux=c(landsat_qB_flux, landsat_qT_flux, 
+                                     S_qB_flux, S_qT_flux, 
+                                     USGS_qB_flux, USGS_qT_flux),
+                              samp=c(landsat_qB_days, landsat_qT_days,
+                                     S_qB_days, S_qT_days,
+                                     USGS_qB_days, USGS_qT_days))
+
+q_storms <- ggplot(storm_quartiles, aes(x=flow, y=flux, fill=flow)) +
+  geom_bar(stat="identity", color="black") +
+  geom_text(aes(label=sprintf("%0.1f", round(flux*100, digits = 3))), vjust=-0.2,) +
+  # geom_bar(aes(y=Uflux), stat="identity", color="black") +
+  # geom_text(aes(label=paste0("Number of Days ",Usamp)), vjust=-0.2) +
+  theme_minimal() +
+  theme(legend.position="none") +
+  scale_fill_manual(values=c('#999999','#E69F00','#999999','#E69F00', '#999999','#E69F00')) +
+  labs(title="Proportion of sediment flux in large storms - determined via discharge",
+       x = "Discharge by Day")
+       #caption = "Landsat: The top 5% of discharge days account for 30.2% of total flux (5244 [Mt/yr]).\nSentinel: The top 5% of discharge days account for 19.8% of total flux (1156 [Mt/yr]).\nUSGS: The top 5% of discharge days account for 38.3% of total flux (578 [Mt/yr]).")
+
+q_storms
+
+ggsave(q_storms, 
+       filename = paste0(wd_root, '/exports/q_storms.png'),
+       width = 20, height = 8)
 ```
